@@ -1,0 +1,39 @@
+{
+  "name": "n8n-nodes-transcribe-api",
+  "version": "1.0.0",
+  "description": "n8n community node for the self-hosted Transcribe API: upload audio, wait for the transcript, download TXT/SRT/VTT, list and delete transcriptions.",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "transcribe",
+    "transcription",
+    "speech-to-text",
+    "whisper",
+    "audio"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.10"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "validate": "node ../tests/n8n-harness.cjs --validate"
+  },
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/TranscribeApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/TranscribeApi/TranscribeApi.node.js"
+    ]
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  },
+  "devDependencies": {
+    "n8n-workflow": "^2.16.0"
+  }
+}

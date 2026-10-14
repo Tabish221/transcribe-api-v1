@@ -1,0 +1,11 @@
+# Runtime data (uploads, logs, sessions, SQLite database, lock files) - keep the folder, ignore the contents.
+*
+!.gitignore
+!.htaccess
+!uploads/
+!logs/
+!sessions/
+uploads/*
+logs/*
+sessions/*
+!*/.gitkeep

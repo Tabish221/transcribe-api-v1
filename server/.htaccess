@@ -1,0 +1,54 @@
+# Transcribe API - Apache / LiteSpeed rules.
+# Do not add php_value/php_flag here (breaks PHP-FPM); PHP limits live in .user.ini.
+
+Options -Indexes
+DirectoryIndex index.php
+
+# Pass the Authorization header to PHP (CGI/FastCGI/FPM drop it otherwise).
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.+)" HTTP_AUTHORIZATION=$1
+</IfModule>
+<IfModule mod_version.c>
+    <IfVersion >= 2.4.13>
+        CGIPassAuth On
+    </IfVersion>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # Private folders and files: source, storage (uploads, logs, sessions, SQLite), cron, config, docs, dotfiles.
+    RewriteRule ^(src|storage|cron)(/|$) - [F,L]
+    RewriteRule ^config(\.sample)?\.php$ - [F,L]
+    RewriteRule \.md$ - [F,L]
+    RewriteRule (^|/)\.(?!well-known/) - [F,L]
+
+    # Everything that is not an existing file goes to the front controller.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [L,QSA]
+</IfModule>
+
+# Deny the same files when mod_rewrite is unavailable.
+<FilesMatch "^(config\.php|config\.sample\.php|.*\.md|\..*)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Security headers for static dashboard files (PHP responses set their own).
+<IfModule mod_headers.c>
+    <FilesMatch "\.(html|js|css|svg|json|webmanifest)$">
+        Header set X-Content-Type-Options "nosniff"
+        Header set X-Frame-Options "DENY"
+        Header set Referrer-Policy "no-referrer"
+    </FilesMatch>
+    <FilesMatch "\.html$">
+        Header set Content-Security-Policy "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+    </FilesMatch>
+</IfModule>

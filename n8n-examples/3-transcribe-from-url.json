@@ -1,0 +1,201 @@
+{
+  "name": "Transcribe API - transcribe an audio URL",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Transcribe audio from a URL\n1. **Config**: set `baseUrl`, the public `audioUrl` of the recording, `language` and `engine`.\n2. Select your **Header Auth** credential (Name `Authorization`, Value `Bearer tk_...`) in **Transcribe**.\n3. Execute the workflow.\n\n**Download audio** fetches the file as binary; **Ensure file name** makes sure it has an extension the API accepts (mp3 by default) before the upload.",
+        "height": 280,
+        "width": 680
+      },
+      "id": "1c7e5a3f-9b2d-4e81-a6f4-3d8b0c2e9f57",
+      "name": "Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-40, -320]
+    },
+    {
+      "parameters": {},
+      "id": "6b3f8d21-4c9e-4a7b-b5d2-e1f0a9c83d46",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2d9a4f6e-8c1b-4e3a-9f75-b0c6d2e8a417",
+              "name": "baseUrl",
+              "value": "https://example.com/transcribe",
+              "type": "string"
+            },
+            {
+              "id": "8e4c1a7d-3f2b-4d96-a0e8-5c7b9d1f3a62",
+              "name": "audioUrl",
+              "value": "https://example.com/recordings/call.mp3",
+              "type": "string"
+            },
+            {
+              "id": "c5f2e9b8-7a4d-4c13-8b6e-2f9d0a5c7e14",
+              "name": "language",
+              "value": "en",
+              "type": "string"
+            },
+            {
+              "id": "a9d6b3e1-2c8f-4b57-9e4a-7d1c5f0b8e23",
+              "name": "engine",
+              "value": "cloud",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f7b1c4e9-5d3a-4f28-8c6b-0e9a2d7f1b35",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.audioUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "3e8f2b6a-1d7c-4a95-b4e3-9c0f5a8d2b71",
+      "name": "Download audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// The API accepts files by extension (mp3 by default), so make sure the binary is named like \"call.mp3\".\nconst binary = $input.item.binary && $input.item.binary.data;\nif (!binary) {\n  throw new Error('No binary property \"data\": check the Download audio node');\n}\nif (!/\\.[a-z0-9]{2,5}$/i.test(binary.fileName || '')) {\n  const byMime = { 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg' };\n  const ext = byMime[String(binary.mimeType || '').split(';')[0].trim()] || 'mp3';\n  binary.fileName = (binary.fileName || 'audio') + '.' + ext;\n  binary.fileExtension = ext;\n}\nreturn $input.item;\n"
+      },
+      "id": "9a2c7e5f-4b1d-4e68-a3f9-6d0b8c2e5a14",
+      "name": "Ensure file name",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').item.json.baseUrl }}/api/v1/transcriptions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "language",
+              "value": "={{ $('Config').item.json.language }}"
+            },
+            {
+              "name": "engine",
+              "value": "={{ $('Config').item.json.engine }}"
+            },
+            {
+              "name": "wait",
+              "value": "true"
+            },
+            {
+              "name": "metadata",
+              "value": "={{ JSON.stringify({ source_url: $('Config').item.json.audioUrl }) }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "5d0e8b3c-7f2a-4c96-b1e5-a4f9c6d2e087",
+      "name": "Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Transcribe API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e6a1f8c3-2b9d-4e74-8a05-c7d3b1f9e2a6",
+              "name": "id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "b2d9c5a7-6e1f-4083-9c4b-f8a2e0d6c3b9",
+              "name": "status",
+              "value": "={{ $json.status }}",
+              "type": "string"
+            },
+            {
+              "id": "4f7e1b9d-8a3c-4d52-b6f0-1e5c9a7d3b28",
+              "name": "text",
+              "value": "={{ $json.text }}",
+              "type": "string"
+            },
+            {
+              "id": "d8b4a2e6-0c5f-4f19-a7d3-9b1e6c4f8a05",
+              "name": "source_url",
+              "value": "={{ ($json.metadata || {}).source_url }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0c5b9e7a-3d8f-4a21-9e6c-b7f4d1a8c3e5",
+      "name": "Transcript",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1100, 0]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Download audio", "type": "main", "index": 0 }]]
+    },
+    "Download audio": {
+      "main": [[{ "node": "Ensure file name", "type": "main", "index": 0 }]]
+    },
+    "Ensure file name": {
+      "main": [[{ "node": "Transcribe", "type": "main", "index": 0 }]]
+    },
+    "Transcribe": {
+      "main": [[{ "node": "Transcript", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

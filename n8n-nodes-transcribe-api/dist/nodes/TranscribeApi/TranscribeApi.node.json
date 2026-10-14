@@ -1,0 +1,11 @@
+{
+  "node": "n8n-nodes-transcribe-api.transcribeApi",
+  "nodeVersion": "1.0",
+  "codexVersion": "1.0",
+  "categories": ["Utility"],
+  "alias": ["transcription", "speech to text", "whisper", "audio", "subtitles", "srt", "vtt"],
+  "resources": {
+    "credentialDocumentation": [],
+    "primaryDocumentation": []
+  }
+}

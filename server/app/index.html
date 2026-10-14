@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Transcribe API</title>
+<!-- All assets are relative: the page is served at the app's base path (with trailing slash). -->
+<link rel="icon" href="app/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app/app.css">
+<script src="app/app.js" defer></script>
+</head>
+<body>
+<button type="button" class="skip" id="skip">Skip to content</button>
+<header class="topbar" id="topbar" hidden></header>
+<main class="container" id="view" tabindex="-1">
+  <div class="state loading" role="status"><span class="spinner" aria-hidden="true"></span><span>Loading…</span></div>
+  <noscript><p class="state">This dashboard needs JavaScript enabled.</p></noscript>
+</main>
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+</body>
+</html>

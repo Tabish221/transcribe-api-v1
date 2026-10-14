@@ -1,0 +1,189 @@
+{
+  "name": "Transcribe API - transcribe a file and wait",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Transcribe a local file and wait\n1. **Config**: set `baseUrl` (where the server is installed, without `/api/v1`), `filePath`, `language` and `engine`.\n2. Create a **Header Auth** credential: Name `Authorization`, Value `Bearer tk_...` (your project API key) and select it in **Transcribe**.\n3. Execute the workflow.\n\n`engine=cloud` + `wait=true` returns the finished transcript in one call. `engine=worker` returns a `queued` job: use the webhook example or poll `GET /api/v1/transcriptions/{id}`.",
+        "height": 280,
+        "width": 660
+      },
+      "id": "6586d471-2808-4e4e-b6fc-74bdad209d8c",
+      "name": "Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-40, -320]
+    },
+    {
+      "parameters": {},
+      "id": "935f7d18-e846-4520-a2b4-c694bb1f1d22",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "fa16f7f3-5429-4099-9e75-30d3f7e93aa0",
+              "name": "baseUrl",
+              "value": "https://example.com/transcribe",
+              "type": "string"
+            },
+            {
+              "id": "1d5fc2f7-e77f-4c58-aed8-d7660cd20d7b",
+              "name": "filePath",
+              "value": "/home/node/.n8n-files/call.mp3",
+              "type": "string"
+            },
+            {
+              "id": "b8426e54-f0af-4fb0-89db-b512441b4dcd",
+              "name": "language",
+              "value": "en",
+              "type": "string"
+            },
+            {
+              "id": "48af4ef3-494b-4e3f-b08f-521ca2192cbc",
+              "name": "engine",
+              "value": "cloud",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7a65e41b-1cc4-416e-b44c-fa72e03c7f7d",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "fileSelector": "={{ $json.filePath }}",
+        "options": {}
+      },
+      "id": "0f55fba3-531b-4e6d-a3ba-1bddde4247a2",
+      "name": "Read audio file",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').item.json.baseUrl }}/api/v1/transcriptions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "language",
+              "value": "={{ $('Config').item.json.language }}"
+            },
+            {
+              "name": "engine",
+              "value": "={{ $('Config').item.json.engine }}"
+            },
+            {
+              "name": "wait",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "85b227b9-0560-4ccd-9eee-0e49a6a5ab73",
+      "name": "Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Transcribe API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b985d9d1-4513-4507-a403-9c31e5cfd035",
+              "name": "id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "00ee8825-c63e-4ea1-9985-994531b897c9",
+              "name": "status",
+              "value": "={{ $json.status }}",
+              "type": "string"
+            },
+            {
+              "id": "b82372d0-56ef-4dac-9ce6-540c77411cc8",
+              "name": "text",
+              "value": "={{ $json.text }}",
+              "type": "string"
+            },
+            {
+              "id": "42583e74-67af-4e05-b668-21676b889845",
+              "name": "language",
+              "value": "={{ $json.detected_language }}",
+              "type": "string"
+            },
+            {
+              "id": "4592f350-08dc-45ee-b50d-49bc436ccf00",
+              "name": "duration",
+              "value": "={{ $json.duration }}",
+              "type": "number"
+            },
+            {
+              "id": "eda2248c-2b17-4adb-9bd8-e0886cc0d04c",
+              "name": "segments",
+              "value": "={{ $json.segments }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "09431e34-b59f-4863-860d-46c92a22a52f",
+      "name": "Transcript",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [880, 0]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Read audio file", "type": "main", "index": 0 }]]
+    },
+    "Read audio file": {
+      "main": [[{ "node": "Transcribe", "type": "main", "index": 0 }]]
+    },
+    "Transcribe": {
+      "main": [[{ "node": "Transcript", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

@@ -1,0 +1,167 @@
+{
+  "name": "Transcribe API - webhook receiver",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Receive finished transcriptions\n1. Activate the workflow and copy the **Production URL** of the Webhook node.\n2. Paste it as the project **Webhook URL** in the dashboard (Settings tab), or send it as `webhook_url` when uploading.\n3. Copy the project **webhook secret** (`whsec_...`) into **Verify signature**.\n4. Self-hosted n8n: allow the crypto module with `NODE_FUNCTION_ALLOW_BUILTIN=crypto`.\n\nThe Webhook option **Raw Body** must stay on: the signature is an HMAC of the exact request bytes.",
+        "height": 300,
+        "width": 660
+      },
+      "id": "418f3dd6-6c5f-47f6-8fb1-ddf304798981",
+      "name": "Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-40, -340]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "transcribe-api",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "0189f3b5-3ee7-4dd7-8804-fb403f1e4c86",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "8605dfc9-f9ea-480f-bbde-74b51f8ae992"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifies X-Transcribe-Signature = \"sha256=\" + HMAC-SHA256(raw request body, project webhook secret).\n// Needs the Webhook option \"Raw Body\": the exact request bytes arrive in binary property \"data\".\nconst crypto = require('crypto');\nconst WEBHOOK_SECRET = 'whsec_REPLACE_WITH_YOUR_PROJECT_SECRET'; // dashboard > project > Settings\n\nconst results = [];\nconst items = $input.all();\nfor (let index = 0; index < items.length; index++) {\n  const item = items[index];\n  if (!item.binary || !item.binary.data) {\n    throw new Error('No raw body: enable \"Raw Body\" in the Webhook node options');\n  }\n  const raw = await this.helpers.getBinaryDataBuffer(index, 'data');\n  const received = String(item.json.headers['x-transcribe-signature'] || '');\n  const expected = 'sha256=' + crypto.createHmac('sha256', WEBHOOK_SECRET).update(raw).digest('hex');\n  const valid = received.length === expected.length &&\n    crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));\n  if (!valid) {\n    throw new Error('Invalid X-Transcribe-Signature: this request was not signed with your webhook secret');\n  }\n\n  const payload = JSON.parse(raw.toString('utf8'));\n  results.push({\n    json: { event: payload.event, delivered_at: payload.created_at, ...payload.data },\n    pairedItem: { item: index },\n  });\n}\nreturn results;\n"
+      },
+      "id": "4e25c6b0-b3a8-427e-a735-7180e292447e",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "1e73299c-bb09-4a7b-a17a-3728726727c4",
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "transcription.completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3dce0eb2-a725-45bb-b388-ef683568ffde",
+      "name": "Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "36c71b49-7b71-4899-8c89-02d97f844aed",
+              "name": "id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "2cc18707-ead2-4888-a3dd-87b4a51555a5",
+              "name": "filename",
+              "value": "={{ $json.filename }}",
+              "type": "string"
+            },
+            {
+              "id": "5f0e2a8c-7d4b-4c1e-9a36-2b8f1d6e4c70",
+              "name": "text",
+              "value": "={{ $json.text }}",
+              "type": "string"
+            },
+            {
+              "id": "a3c94e17-58b2-4f0d-8e61-7c2d9b05f4a8",
+              "name": "language",
+              "value": "={{ $json.detected_language }}",
+              "type": "string"
+            },
+            {
+              "id": "c8d27b5e-1f93-4a6c-b04e-93e5a1d7c2f6",
+              "name": "metadata",
+              "value": "={{ $json.metadata }}",
+              "type": "object"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e2b7f4c1-6a8d-4e35-9f02-1d4c8b7a3e59",
+      "name": "Transcript",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [660, -100]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7d1e9c3a-4b62-4f8e-a5d0-c3b8e2f61a94",
+              "name": "id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "f4a83b26-9c1d-4e7b-8f50-6e2d1a9c7b38",
+              "name": "filename",
+              "value": "={{ $json.filename }}",
+              "type": "string"
+            },
+            {
+              "id": "9b6c2e84-3d5a-4f17-b9e8-0a4f7c1d2e63",
+              "name": "error",
+              "value": "={{ $json.error }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d06f3a92-8e4b-4c71-a2d5-5b9e1c3f7a28",
+      "name": "Failure",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [660, 100]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Verify signature", "type": "main", "index": 0 }]]
+    },
+    "Verify signature": {
+      "main": [[{ "node": "Completed?", "type": "main", "index": 0 }]]
+    },
+    "Completed?": {
+      "main": [
+        [{ "node": "Transcript", "type": "main", "index": 0 }],
+        [{ "node": "Failure", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
