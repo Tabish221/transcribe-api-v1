@@ -1,0 +1,23 @@
+{
+  "name": "transcribe-api-react-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "React + Vite demo for the Transcribe API. A small Node backend keeps the API key secret.",
+  "type": "module",
+  "scripts": {
+    "dev": "node dev.mjs",
+    "build": "vite build",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "vite": "^8.3.3"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}
