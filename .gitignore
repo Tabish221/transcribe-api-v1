@@ -1,43 +1,43 @@
 # Dependencies & downloaded models
 node_modules/
-worker/models/
-worker/tmp/
+# worker/models/
+# worker/tmp/
 
 # Secrets & local config
 .env
 *.env.local
-server/config.php
-server/storage/installed.lock
-server/storage/*.sqlite
-server/storage/uploads/*
-!server/storage/uploads/.htaccess
-!server/storage/uploads/index.html
-!server/storage/uploads/.gitkeep
-server/storage/logs/*
-!server/storage/logs/.htaccess
-!server/storage/logs/index.html
-!server/storage/logs/.gitkeep
-server/storage/sessions/*
-!server/storage/sessions/.htaccess
-!server/storage/sessions/index.html
-!server/storage/sessions/.gitkeep
+# server/config.php
+# server/storage/installed.lock
+# server/storage/*.sqlite
+# server/storage/uploads/*
+# !server/storage/uploads/.htaccess
+# !server/storage/uploads/index.html
+# !server/storage/uploads/.gitkeep
+# server/storage/logs/*
+# !server/storage/logs/.htaccess
+# !server/storage/logs/index.html
+# !server/storage/logs/.gitkeep
+# server/storage/sessions/*
+# !server/storage/sessions/.htaccess
+# !server/storage/sessions/index.html
+# !server/storage/sessions/.gitkeep
 
 # Private call recordings and transcripts (contain personal data)
-*.mp3
-*.wav
-*.m4a
-samples/
-tests/fixtures/
+# *.mp3
+# *.wav
+# *.m4a
+# samples/
+# tests/fixtures/
 
 # Test runs & build output
-tests/tmp/
-/dist/
-*.tgz
-*.zip
+# tests/tmp/
+# /dist/
+# *.tgz
+# *.zip
 
 # OS / editor
-.DS_Store
-Thumbs.db
-desktop.ini
-.vscode/
-.idea/
+# .DS_Store
+# Thumbs.db
+# desktop.ini
+# .vscode/
+# .idea/
