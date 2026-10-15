@@ -20,6 +20,11 @@ final class CloudEngine
         $translate = $task === 'translate';
         $url = rtrim((string) $cloud['base_url'], '/') . ($translate ? '/audio/translations' : '/audio/transcriptions');
         $model = (string) ($translate ? ($cloud['translate_model'] ?: $cloud['model']) : $cloud['model']);
+        // Providers detect the audio format from the uploaded name's extension: it must match the stored file.
+        $ext = strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
+        if ($ext !== '' && strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)) !== $ext) {
+            $filename = 'audio.' . $ext;
+        }
 
         $fields = [
             'file' => new \CURLFile($path, $mime, $filename),

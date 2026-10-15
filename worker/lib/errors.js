@@ -5,12 +5,20 @@ export class PermanentError extends Error {
   name = 'PermanentError';
 }
 
+/**
+ * This PC cannot run any job (e.g. ffmpeg cannot be started). Not the job's fault: the job is handed
+ * back without using up an attempt and the worker stops instead of failing the whole queue.
+ */
+export class WorkerFault extends Error {
+  name = 'WorkerFault';
+}
+
 /** The server no longer has this job assigned to us (404/409): drop it silently. */
 export class JobLostError extends Error {
   name = 'JobLostError';
 }
 
-/** The worker is shutting down (Ctrl+C). The job is handed back with retry:true. */
+/** The worker is shutting down (Ctrl+C). The job is handed back (retry:true, release:true). */
 export class StopError extends Error {
   name = 'StopError';
   constructor(message = 'Worker stopped before finishing the job') {

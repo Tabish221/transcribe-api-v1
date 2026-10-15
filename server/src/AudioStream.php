@@ -33,6 +33,8 @@ final class AudioStream
             'Content-Length: ' . ($size === 0 ? 0 : $end - $start + 1),
             'Content-Disposition: ' . Util::contentDisposition('inline', $filename),
             'Cache-Control: private, no-store',
+            // Uploaded bytes opened as a page must never run script on the dashboard origin.
+            'Content-Security-Policy: ' . Response::DOWNLOAD_CSP,
         ];
         if ($status === 206) {
             $headers[] = "Content-Range: bytes {$start}-{$end}/{$size}";

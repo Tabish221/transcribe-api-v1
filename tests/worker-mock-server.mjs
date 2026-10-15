@@ -129,7 +129,13 @@ class MockServer {
       return error(422, 'validation_error', 'error (string) and retry (boolean) are required');
     }
     job.error = body.error;
-    job.status = body.retry && job.attempts < MAX_ATTEMPTS ? 'queued' : 'failed';
+    if (body.retry && body.release === true) {
+      // Hand-back (graceful stop): re-queued and the claim's attempt is returned, like the real server.
+      job.status = 'queued';
+      job.attempts = Math.max(0, job.attempts - 1);
+    } else {
+      job.status = body.retry && job.attempts < MAX_ATTEMPTS ? 'queued' : 'failed';
+    }
     job.locked_until = null;
     return reply(200, { ok: true });
   }
@@ -257,7 +263,7 @@ async function scenarios(server) {
   check('job marked failed', job.status === 'failed', job.status);
   check('temp files cleaned', tempLeftovers().length === 0, tempLeftovers().join(', '));
 
-  console.log('\n[3] Graceful stop during transcription -> job handed back (retry:true), root-relative audio_url');
+  console.log('\n[3] Graceful stop during transcription -> job handed back (retry + release), root-relative audio_url');
   server.reset();
   server.addJob({ id: 'tr_mock_stop', filename: 'clip.mp3', bytes: clip, language: 'en', audioUrl: `${BASE_PATH}/api/worker/jobs/tr_mock_stop/audio` });
   run = await runWorker([], {}, {
@@ -273,8 +279,9 @@ async function scenarios(server) {
   const stopFail = server.calls.find((c) => c.route.endsWith('/fail'));
   console.log(`  calls: ${routesOf(server).join(' -> ')}  (${(run.ms / 1000).toFixed(1)} s)`);
   check('worker exits cleanly (code 0)', run.code === 0, `code ${run.code}`);
-  check('fail reported with retry:true', stopFail?.body?.retry === true, JSON.stringify(stopFail?.body));
-  check('job back in the queue', job.status === 'queued' && !job.result, job.status);
+  check('fail reported with retry:true and release:true', stopFail?.body?.retry === true && stopFail?.body?.release === true, JSON.stringify(stopFail?.body));
+  check('job back in the queue, attempt given back', job.status === 'queued' && !job.result && job.attempts === 0, `${job.status}, attempts ${job.attempts}`);
+  check('job handed back only once', server.calls.filter((c) => c.route.endsWith('/fail')).length === 1);
   check('temp files cleaned', tempLeftovers().length === 0, tempLeftovers().join(', '));
 
   console.log('\n[4] Wrong token -> clear error, exit code 1, job untouched');

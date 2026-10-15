@@ -30,12 +30,18 @@ final class Languages
         'haitian creole' => 'ht', 'pashto' => 'ps', 'turkmen' => 'tk', 'nynorsk' => 'nn', 'maltese' => 'mt',
         'sanskrit' => 'sa', 'luxembourgish' => 'lb', 'myanmar' => 'my', 'tibetan' => 'bo', 'tagalog' => 'tl',
         'malagasy' => 'mg', 'assamese' => 'as', 'tatar' => 'tt', 'hawaiian' => 'haw', 'lingala' => 'ln',
-        'hausa' => 'ha', 'bashkir' => 'ba', 'javanese' => 'jw', 'sundanese' => 'su', 'cantonese' => 'yue',
+        'hausa' => 'ha', 'bashkir' => 'ba', 'javanese' => 'jv', 'sundanese' => 'su', 'cantonese' => 'yue',
         // Common aliases
         'burmese' => 'my', 'valencian' => 'ca', 'flemish' => 'nl', 'haitian' => 'ht', 'letzeburgesch' => 'lb',
         'pushto' => 'ps', 'panjabi' => 'pa', 'moldavian' => 'ro', 'moldovan' => 'ro', 'sinhalese' => 'si',
         'castilian' => 'es', 'mandarin' => 'zh', 'farsi' => 'fa', 'filipino' => 'tl',
     ];
+
+    /**
+     * Whisper's own codes that differ from ISO-639-1 (Javanese is "jw" in Whisper, "jv" in ISO).
+     * The API always uses the ISO code; the PC worker maps it back for the model.
+     */
+    private const WHISPER_CODES = ['jw' => 'jv'];
 
     /**
      * Normalises a language code or name to a code.
@@ -54,9 +60,9 @@ final class Languages
             return self::NAMES[$value];
         }
         $codes = array_flip(self::NAMES);
-        $codes['jv'] = 'javanese';
         // Accept "en", "EN", "en-US", "en_GB"
         $primary = preg_split('/[-_]/', $value)[0] ?? $value;
+        $primary = self::WHISPER_CODES[$primary] ?? $primary;
         return isset($codes[$primary]) ? $primary : false;
     }
 

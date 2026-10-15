@@ -110,10 +110,11 @@ How **Wait for Completion** works:
 - Cloud (or Project Default): the upload is sent with `wait=true`, so the server transcribes inside the request and returns the finished object.
 - Worker, or any response still `queued`/`processing`: the node polls `GET /api/v1/transcriptions/{id}` every *Poll Interval* seconds.
 - The node fails when the job ends as `failed` or the *Timeout* (upload included) runs out.
+- A poll that fails with a network error or HTTP 408/429/5xx (shared hosts return 503/508 briefly under load) is retried on the next poll until the *Timeout*; other poll errors stop the wait. Either way the error keeps the transcription `id`.
 - With **On Error → Continue**, the item is output instead, containing the transcription fields plus `error`, so you keep the `id` and can fetch the result later.
 - For long worker jobs, consider turning waiting off and using a webhook (see `../n8n-examples/2-webhook-receiver.json`).
 
-File type: the API checks the file **extension** (mp3 by default). The node sends the binary's file name. When that name has no extension, the node appends one based on the MIME type (`audio/mpeg` gives `.mp3`). Use **Additional Fields → File Name** to override it.
+File type: the API checks the file **extension** (mp3 by default). The node sends the binary's file name. When that name has no extension, the node appends one based on the MIME type (`audio/mpeg` gives `.mp3`, also for binaries from an HTTP Request download of an extensionless URL, where n8n itself sets the extension `mpga`). IANA-style extensions in file names are mapped too (`.mpga` → `.mp3`, `.oga` → `.ogg`). Use **Additional Fields → File Name** to override it.
 
 Every output item has `pairedItem` set, and the node supports **Continue On Fail**. API errors (`{"error":{"code","message"}}`) are reported as n8n API errors with the server's message and code.
 

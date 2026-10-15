@@ -53,7 +53,10 @@ final class Util
         return trim(preg_replace('/\s{2,}/u', ' ', $value) ?? '');
     }
 
-    /** Sanitised display filename (never used as a filesystem path). */
+    /**
+     * Sanitised display filename (never used as a filesystem path), at most 200 characters and always
+     * ending in ".$ext": cloud providers detect the audio format from the uploaded name's extension.
+     */
     public static function sanitizeFilename(string $name, string $ext): string
     {
         if (preg_match('//u', $name) !== 1) {
@@ -62,8 +65,14 @@ final class Util
         $name = str_replace('\\', '/', $name);
         $name = substr($name, (int) strrpos('/' . $name, '/')); // basename() is locale dependent
         $name = preg_replace('/[\x00-\x1F\x7F"<>|:*?]+/u', '', $name) ?? '';
-        $name = ltrim(self::cleanLine($name), '.');
-        return $name === '' ? 'audio.' . $ext : self::cut($name, 200);
+        $name = self::cleanLine($name);
+        $suffix = $ext === '' ? '' : '.' . $ext;
+        if ($suffix !== '' && strcasecmp(substr($name, -strlen($suffix)), $suffix) === 0) {
+            $suffix = substr($name, -strlen($suffix)); // keep the original spelling, e.g. ".MP3"
+            $name = substr($name, 0, -strlen($suffix));
+        }
+        $base = trim(ltrim($name, '.'));
+        return ($base === '' ? 'audio' : self::cut($base, 200 - strlen($suffix))) . $suffix;
     }
 
     /** ASCII-only filename for Content-Disposition headers. */

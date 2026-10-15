@@ -23,6 +23,7 @@ DirectoryIndex index.php
     RewriteRule ^(src|storage|cron)(/|$) - [F,L]
     RewriteRule ^config(\.sample)?\.php$ - [F,L]
     RewriteRule \.md$ - [F,L]
+    RewriteRule \.(sqlite3?|db)(-wal|-shm|-journal)?$ - [F,L]
     RewriteRule (^|/)\.(?!well-known/) - [F,L]
 
     # Everything that is not an existing file goes to the front controller.
@@ -31,7 +32,7 @@ DirectoryIndex index.php
 </IfModule>
 
 # Deny the same files when mod_rewrite is unavailable.
-<FilesMatch "^(config\.php|config\.sample\.php|.*\.md|\..*)$">
+<FilesMatch "^(config\.php|config\.sample\.php|.*\.md|.*\.(sqlite3?|db)(-wal|-shm|-journal)?|\..*)$">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>

@@ -108,7 +108,14 @@ final class WorkerApi
         $error = is_string($error) && trim($error) !== '' ? $error : 'The worker reported a failure';
         $retry = Validate::bool($request->input('retry', false));
         $max = max(1, (int) Config::get('worker.max_attempts', 3));
-        if ($retry && $row['attempts'] < $max) {
+        if ($retry && Validate::bool($request->input('release', false))) {
+            // Optional extension of SPEC 8: the worker gives the job back without having failed it
+            // (graceful stop, broken local setup). The claim's attempt is returned, so stopping a worker
+            // during a long job can never use up worker.max_attempts.
+            Db::run("UPDATE transcriptions SET status = 'queued', locked_until = NULL, progress = NULL,
+                    attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END
+                WHERE id = ? AND engine = 'worker' AND status = 'processing'", [$id]);
+        } elseif ($retry && $row['attempts'] < $max) {
             Db::run("UPDATE transcriptions SET status = 'queued', locked_until = NULL, progress = NULL
                 WHERE id = ? AND engine = 'worker' AND status = 'processing'", [$id]);
         } else {

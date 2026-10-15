@@ -287,11 +287,16 @@ final class Transcriptions
         return is_file($path) ? $path : null;
     }
 
+    /**
+     * Content-Type for serving the job's audio: the extension map, else the type sniffed at upload but
+     * only when it is audio/* or video/*. Never a sniffed text/html or image/svg+xml (stored XSS).
+     */
     public static function audioMime(array $row): string
     {
         $mime = Util::audioMime((string) pathinfo((string) $row['file_path'], PATHINFO_EXTENSION));
-        if ($mime === 'application/octet-stream' && !empty($row['mime'])) {
-            $mime = (string) $row['mime'];
+        $sniffed = strtolower(trim((string) ($row['mime'] ?? '')));
+        if ($mime === 'application/octet-stream' && preg_match('#^(audio|video)/[a-z0-9.+-]+$#', $sniffed) === 1) {
+            $mime = $sniffed;
         }
         return $mime;
     }

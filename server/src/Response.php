@@ -10,6 +10,9 @@ final class Response
     public const DASHBOARD_CSP = "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; style-src 'self'; "
         . "script-src 'self'; connect-src 'self'; frame-ancestors 'none'";
 
+    /** For audio and transcript downloads: nothing in them may load, run or be framed. */
+    public const DOWNLOAD_CSP = "default-src 'none'; sandbox";
+
     private static array $extraHeaders = [];
 
     /** Headers added to every response sent afterwards (e.g. CORS). */
@@ -53,6 +56,7 @@ final class Response
             'Content-Type: ' . $mime,
             'Content-Disposition: ' . Util::contentDisposition('attachment', $filename),
             'Cache-Control: no-store',
+            'Content-Security-Policy: ' . self::DOWNLOAD_CSP,
         ]);
     }
 
@@ -86,7 +90,13 @@ final class Response
         if (headers_sent()) {
             return;
         }
-        http_response_code($status);
+        if ($status === 422 && PHP_SAPI === 'cli-server') {
+            // php -S has no reason phrase for 422 ("Unknown Status Code"); Apache/LiteSpeed/FPM add their own.
+            $protocol = (string) ($_SERVER['SERVER_PROTOCOL'] ?? '') === 'HTTP/1.0' ? 'HTTP/1.0' : 'HTTP/1.1';
+            header($protocol . ' 422 Unprocessable Content', true, 422);
+        } else {
+            http_response_code($status);
+        }
         foreach (array_merge(self::$extraHeaders, $headers) as $header) {
             header($header);
         }

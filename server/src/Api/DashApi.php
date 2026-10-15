@@ -62,8 +62,8 @@ final class DashApi
 
     public static function login(Request $request): void
     {
+        Auth::checkSignInRequest($request);
         Auth::startSession($request);
-        Auth::checkOrigin($request);
         $email = $request->input('email');
         $password = $request->input('password');
         if (!is_string($email) || trim($email) === '') {
@@ -91,8 +91,8 @@ final class DashApi
         if (!Config::get('allow_registration')) {
             throw ApiException::forbidden('Registration is disabled on this server');
         }
+        Auth::checkSignInRequest($request);
         Auth::startSession($request);
-        Auth::checkOrigin($request);
         $user = Users::create(
             self::string($request, 'name'),
             self::string($request, 'email'),

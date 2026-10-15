@@ -28,10 +28,11 @@ Options:
   --out <path>        Write the JSON result to this file instead of stdout
   --model <id>        Override MODEL     --device <cpu|dml|cuda>   Override DEVICE
   --dtype <dtype>     Override DTYPE     --env <path|none>          Settings file (default: worker/.env)
+  --translate-model <id>  Override TRANSLATE_MODEL
   --verbose           Debug logging      --help                     Show this help
 
 Settings (.env or environment): API_BASE, WORKER_TOKEN, WORKER_NAME, MODEL, DEVICE, DTYPE,
-POLL_SECONDS, CACHE_DIR, plus optional HEARTBEAT_SECONDS, TEMP_DIR, FFMPEG_PATH, LOG_LEVEL.`;
+POLL_SECONDS, CACHE_DIR, plus optional TRANSLATE_MODEL, HEARTBEAT_SECONDS, TEMP_DIR, FFMPEG_PATH, LOG_LEVEL.`;
 
 export function parseCli(argv) {
   const { values } = parseArgs({
@@ -44,6 +45,7 @@ export function parseCli(argv) {
       task: { type: 'string' },
       out: { type: 'string' },
       model: { type: 'string' },
+      'translate-model': { type: 'string' },
       device: { type: 'string' },
       dtype: { type: 'string' },
       env: { type: 'string' },
@@ -54,7 +56,11 @@ export function parseCli(argv) {
   return values;
 }
 
-/** Minimal .env parser: KEY=value lines, # comments, optional quotes, optional "export ". */
+/**
+ * Minimal .env parser: KEY=value lines, # comments (whole-line or after the value), optional quotes,
+ * optional "export ". `KEY=   # note` is an empty value; `KEY="v" # note` is v; a "#" inside an unquoted
+ * value (e.g. a token "ab#cd") is kept.
+ */
 export function parseEnvFile(text) {
   const vars = {};
   for (const raw of text.split(/\r?\n/)) {
@@ -62,10 +68,8 @@ export function parseEnvFile(text) {
     if (!line || line.startsWith('#')) continue;
     const m = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
     if (!m) continue;
-    let value = m[2];
-    if (/^(["']).*\1$/.test(value)) value = value.slice(1, -1);
-    else value = value.replace(/\s+#.*$/, '').trim();
-    vars[m[1]] = value;
+    const quoted = m[2].match(/^(["'])(.*?)\1\s*(?:#.*)?$/);
+    vars[m[1]] = quoted ? quoted[2] : m[2].replace(/(^|\s)#.*$/, '').trim();
   }
   return vars;
 }
@@ -114,8 +118,10 @@ export function loadConfig(args = {}) {
     token: get('WORKER_TOKEN'),
     workerName: get('WORKER_NAME', os.hostname()).slice(0, 100),
     model: args.model ?? get('MODEL', 'onnx-community/whisper-large-v3-turbo'),
+    // Used for task=translate when MODEL cannot translate (large-v3-turbo, *.en). Empty: such jobs fail clearly.
+    translateModel: args['translate-model'] ?? get('TRANSLATE_MODEL', ''),
     device,
-    dtype: parseDtype(args.dtype ?? get('DTYPE', 'q8')),
+    dtype: parseDtype(args.dtype ?? get('DTYPE', 'q4')),
     pollSeconds: number('POLL_SECONDS', get('POLL_SECONDS', '10'), 1, 3600),
     heartbeatSeconds: number('HEARTBEAT_SECONDS', get('HEARTBEAT_SECONDS', '60'), 5, 60),
     cacheDir: path.resolve(WORKER_DIR, get('CACHE_DIR', './models')),

@@ -25,6 +25,19 @@ const MIME_EXTENSIONS = {
 	'audio/x-flac': 'flac',
 };
 
+/**
+ * n8n fills binary.fileExtension from the MIME type with the mime-types package, which gives the IANA names
+ * ("mpga" for audio/mpeg, "oga" for audio/ogg). The API checks the usual extensions, so map them.
+ */
+const EXTENSION_ALIASES = {
+	mpga: 'mp3',
+	mp2a: 'mp3',
+	m2a: 'mp3',
+	oga: 'ogg',
+	weba: 'webm',
+	mp4a: 'm4a',
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const toNumber = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
@@ -72,11 +85,20 @@ function buildMultipart(fields, file) {
 	return { body: Buffer.concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
-/** File name sent to the API: optional override, else the binary's name, else "<name>.<ext from mime type>". */
+/**
+ * File name sent to the API: optional override, else the binary's name, else "<name>.<ext>" with the extension
+ * from the MIME type (preferred over n8n's fileExtension, which is "mpga" for audio/mpeg).
+ */
 function uploadFileName(binary, override) {
 	if (override) return override;
-	if (/\.[a-z0-9]{2,5}$/i.test(binary.fileName || '')) return binary.fileName;
-	const ext = binary.fileExtension || MIME_EXTENSIONS[String(binary.mimeType || '').toLowerCase()] || 'mp3';
+	const named = /^(.*)\.([a-z0-9]{2,5})$/i.exec(binary.fileName || '');
+	if (named) {
+		const alias = EXTENSION_ALIASES[named[2].toLowerCase()];
+		return alias ? `${named[1]}.${alias}` : binary.fileName;
+	}
+	const mime = String(binary.mimeType || '').split(';')[0].trim().toLowerCase();
+	const fromBinary = String(binary.fileExtension || '').toLowerCase();
+	const ext = MIME_EXTENSIONS[mime] || EXTENSION_ALIASES[fromBinary] || fromBinary || 'mp3';
 	return `${binary.fileName || 'audio'}.${ext}`;
 }
 
@@ -144,27 +166,48 @@ async function apiRequest(baseUrl, itemIndex, method, path, extra = {}) {
 const transcriptionPath = (id) => `/api/v1/transcriptions/${encodeURIComponent(id)}`;
 
 /** Error that carries the last known transcription so continueOnFail can output it. */
-function transcriptionError(node, itemIndex, message, transcription) {
-	const error = new NodeOperationError(node, message, { itemIndex });
+function transcriptionError(node, itemIndex, message, transcription, description) {
+	const error = new NodeOperationError(node, message, { itemIndex, description });
 	error.transcription = transcription;
 	return error;
 }
 
-/** Polls GET /transcriptions/{id} until the job leaves queued/processing or the deadline passes. */
+/**
+ * Worth polling again: no HTTP status at all (network error, timeout, unreadable body) or 408/429/5xx,
+ * which shared hosts return briefly under load (503/508 entry-process limits).
+ */
+function isRetryable(error) {
+	const status = Number(error && error.httpCode);
+	if (Number.isInteger(status) && status >= 100) return status === 408 || status === 429 || status >= 500;
+	return true;
+}
+
+/**
+ * Polls GET /transcriptions/{id} until the job leaves queued/processing or the deadline passes.
+ * Transient poll errors are retried until the deadline; any error thrown keeps the transcription (id) so
+ * the workflow can still find the job, which keeps running on the server.
+ */
 async function waitForTranscription(request, itemIndex, transcription, pollMs, deadline) {
+	const node = this.getNode();
 	let current = transcription;
+	let lastError = null;
 	while (PENDING_STATUSES.includes(current.status)) {
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) {
-			throw transcriptionError(
-				this.getNode(),
-				itemIndex,
-				`Timed out waiting for transcription ${current.id} (last status: ${current.status})`,
-				current,
-			);
+			const reason = lastError ? `; last poll error: ${lastError.message}` : '';
+			throw transcriptionError(node, itemIndex,
+				`Timed out waiting for transcription ${current.id} (last status: ${current.status}${reason})`, current);
 		}
 		await sleep(Math.min(pollMs, remaining));
-		current = await request(itemIndex, 'GET', transcriptionPath(current.id));
+		try {
+			current = await request(itemIndex, 'GET', transcriptionPath(current.id), { timeout: Math.max(1000, deadline - Date.now()) });
+			lastError = null;
+		} catch (error) {
+			if (!isRetryable(error)) {
+				throw transcriptionError(node, itemIndex, `Polling transcription ${current.id} failed: ${error.message}`, current, error.description);
+			}
+			lastError = error; // try again on the next poll
+		}
 	}
 	return current;
 }

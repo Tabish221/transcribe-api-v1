@@ -1,17 +1,30 @@
 // Audio decoding (ffmpeg-static -> 16 kHz mono float32) and loudness normalisation.
 
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { PermanentError, StopError } from './errors.js';
+import { spawn, spawnSync } from 'node:child_process';
+import { PermanentError, StopError, WorkerFault } from './errors.js';
 
 export const SAMPLE_RATE = 16000; // what Whisper expects
 
 /**
+ * Start-up check that ffmpeg can actually run (ffmpeg-static exports a path even when its download
+ * failed, and null on unsupported platforms). Returns a problem description, or null when it works.
+ */
+export function checkFfmpeg(ffmpegPath) {
+  if (!ffmpegPath) return 'ffmpeg was not found (ffmpeg-static has no binary for this platform): install ffmpeg and set FFMPEG_PATH';
+  const r = spawnSync(ffmpegPath, ['-hide_banner', '-version'], { stdio: 'ignore', windowsHide: true, timeout: 30000 });
+  if (r.error) return `ffmpeg cannot be started from "${ffmpegPath}" (${r.error.code ?? r.error.message}): run "npm install" again or fix FFMPEG_PATH`;
+  if (r.status !== 0) return `"${ffmpegPath} -version" failed (exit ${r.status}): run "npm install" again or fix FFMPEG_PATH`;
+  return null;
+}
+
+/**
  * Decode any file ffmpeg understands into 16 kHz mono float samples, streamed from ffmpeg's stdout.
- * Undecodable input throws PermanentError; an aborted signal kills ffmpeg and throws StopError.
+ * Undecodable input throws PermanentError; an aborted signal kills ffmpeg and throws StopError;
+ * an ffmpeg that cannot be started at all throws WorkerFault (a problem of this PC, not of the job).
  */
 export function decodeAudio(file, ffmpegPath, { signal } = {}) {
-  if (!ffmpegPath) return Promise.reject(new Error('ffmpeg binary not found (reinstall ffmpeg-static or set FFMPEG_PATH)'));
+  if (!ffmpegPath) return Promise.reject(new WorkerFault('ffmpeg binary not found (reinstall ffmpeg-static or set FFMPEG_PATH)'));
   const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-i', file,
     '-vn', '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 'f32le', '-acodec', 'pcm_f32le', 'pipe:1'];
 
@@ -27,6 +40,7 @@ export function decodeAudio(file, ffmpegPath, { signal } = {}) {
 
     proc.on('error', (err) => {
       if (err.name === 'AbortError') reject(signal?.reason instanceof Error ? signal.reason : new StopError());
+      else if (['ENOENT', 'EACCES', 'EPERM', 'ENOEXEC'].includes(err.code)) reject(new WorkerFault(`ffmpeg cannot be started (${err.code})`));
       else reject(new Error(`Could not run ffmpeg: ${err.message}`));
     });
     proc.on('close', (code, killedBy) => {
