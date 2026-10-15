@@ -4,8 +4,8 @@ node_modules/
 # worker/tmp/
 
 # Secrets & local config
-.env
-*.env.local
+# .env
+# *.env.local
 # server/config.php
 # server/storage/installed.lock
 # server/storage/*.sqlite
