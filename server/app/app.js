@@ -218,9 +218,12 @@
   const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
   const baseName = (name) => String(name || 'transcript').replace(/\.[^.]+$/, '') || 'transcript';
 
+  /** First letters of the first and last word ("E2E Project (renamed)" -> "ER"); punctuation is ignored. */
   function initials(name) {
-    const parts = String(name || '?').replace(/@.*/, '').split(/[\s._-]+/).filter(Boolean);
-    return ((parts[0] || '?')[0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+    const parts = String(name || '').replace(/@.*/, '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    const first = (word) => Array.from(word)[0]; // whole code point, not half a surrogate pair
+    if (!parts.length) return '?';
+    return (first(parts[0]) + (parts.length > 1 ? first(parts[parts.length - 1]) : '')).toUpperCase();
   }
 
   function avatar(name, size) {

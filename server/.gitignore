@@ -1,1 +1,2 @@
-config.php
+# Local install config (written by install.php) - contains secrets
+/config.php
