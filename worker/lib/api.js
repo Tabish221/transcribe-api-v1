@@ -135,6 +135,15 @@ export class WorkerApi {
     return this.jobCall(jobId, 'fail', { error: String(error).slice(0, 1000), retry }, { retries: 3, stoppable: false });
   }
 
+  /**
+   * Hand a job back without failing it (graceful stop, broken local setup): retry + release puts it back in
+   * the queue and returns the claim's attempt. Quick on purpose: on Windows a closed console window
+   * leaves only about 10 s.
+   */
+  async release(jobId, reason) {
+    return this.jobCall(jobId, 'fail', { error: reason, retry: true, release: true }, { retries: 1, timeoutMs: 3000, stoppable: false });
+  }
+
   async jobCall(jobId, action, body, options) {
     try {
       return await this.request('POST', `api/worker/jobs/${encodeURIComponent(jobId)}/${action}`, { body, ...options });

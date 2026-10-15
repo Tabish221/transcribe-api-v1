@@ -622,8 +622,19 @@
       dlg.remove();
       if (opts.onClose) opts.onClose();
     };
-    dlg.addEventListener('close', () => dlg.dismiss());
-    if (opts.dismissable !== false) {
+    dlg.addEventListener('close', () => {
+      // A non-dismissable dialog closed by Esc (Chrome closes on a repeated Esc even when 'cancel' is
+      // prevented) is shown again: only its own buttons (dlg.dismiss) may close it.
+      if (opts.dismissable === false && !finished) {
+        dlg.showModal();
+        return;
+      }
+      dlg.dismiss();
+    });
+    if (opts.dismissable === false) {
+      // Esc must not throw away content shown only once (e.g. a new API key); use the explicit buttons.
+      dlg.addEventListener('cancel', (e) => e.preventDefault());
+    } else {
       // Click on the backdrop (outside the dialog box) closes it.
       dlg.addEventListener('mousedown', (e) => {
         if (e.target !== dlg) return;
@@ -957,6 +968,7 @@
       if (tabId === tab) a.setAttribute('aria-current', 'page');
       else a.removeAttribute('aria-current');
     }
+    revealTab(sh.nav, sh.links[tab]);
     document.title = `${TABS.find((t) => t.id === tab).label} · ${sh.project.name} · ${APP_NAME}`;
     sh.panel.replaceChildren(loadingState());
     try {
@@ -966,6 +978,14 @@
       if (!(err instanceof ApiError)) console.error(err);
       sh.panel.replaceChildren(h('div', { class: 'card' }, errorState(err, () => onRoute())));
     }
+  }
+
+  /** Scrolls the (horizontally scrolling) tab strip so the current tab is visible; never scrolls the page. */
+  function revealTab(nav, tab) {
+    const n = nav.getBoundingClientRect();
+    const r = tab.getBoundingClientRect();
+    if (r.left < n.left) nav.scrollLeft -= n.left - r.left + 24;
+    else if (r.right > n.right) nav.scrollLeft += r.right - n.right + 24;
   }
 
   function buildShell(p) {
@@ -999,6 +1019,7 @@
     if (oldName && oldName !== proj.name) document.title = document.title.replace(oldName, proj.name);
     sh.role.replaceWith(sh.role = roleBadge(proj.role));
     sh.meta.replaceChildren('Created ', timeEl(proj.created_at), ` · Default engine: ${engineLabel(proj.default_engine)} · Language: ${langLabel(proj.default_language)}`);
+    if (sh.onProjectChange) sh.onProjectChange();
   }
 
   // ---------------------------------------------------------------- tab: transcriptions
@@ -1201,7 +1222,7 @@
   }
 
   function transcriptionList(ctx, p) {
-    const st = { status: '', offset: 0, timer: 0, total: 0, count: 0 };
+    const st = { status: '', offset: 0, timer: 0, total: 0, count: 0, seq: 0 };
     const filter = h('select', { class: 'compact', 'aria-label': 'Filter by status' },
       h('option', { value: '' }, 'All statuses'), STATUSES.map((s) => h('option', { value: s }, STATUS_LABELS[s])));
     filter.addEventListener('change', () => { st.status = filter.value; st.offset = 0; load(); });
@@ -1219,20 +1240,23 @@
     async function load(silent) {
       clearTimeout(st.timer);
       if (!ctx.alive) return;
+      // Only the newest request may render: a slow auto-refresh for the old filter/page must not
+      // overwrite the result of a filter or page change made meanwhile.
+      const seq = ++st.seq;
       if (!silent) body.setAttribute('aria-busy', 'true');
       let res;
       try {
         res = await api(`projects/${enc(p.id)}/transcriptions?` + qs({ status: st.status, limit: PAGE_SIZE, offset: st.offset }));
       } catch (e) {
-        if (!ctx.alive || e.status === 401) return;
+        if (!ctx.alive || e.status === 401 || seq !== st.seq) return;
         if (silent) { if (!e.status || e.status >= 500) schedule(); return; }
         body.replaceChildren(errorState(e, () => load()));
         pager.hidden = true;
         return;
       } finally {
-        body.removeAttribute('aria-busy');
+        if (seq === st.seq) body.removeAttribute('aria-busy');
       }
-      if (!ctx.alive) return;
+      if (!ctx.alive || seq !== st.seq) return;
       const items = res.data || [];
       if (!items.length && st.offset > 0) { st.offset = Math.max(0, st.offset - PAGE_SIZE); return load(silent); }
       render(items, res.total != null ? res.total : items.length);
@@ -1578,7 +1602,11 @@
     const p = sh.project;
     const confirmInput = h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false' });
     const del = h('button', { class: 'btn danger', type: 'button', disabled: true }, icon('trash'), 'Delete project');
-    confirmInput.addEventListener('input', () => { del.disabled = confirmInput.value.trim() !== sh.project.name; });
+    const nameEl = h('strong', null, p.name);
+    const sync = () => { del.disabled = confirmInput.value.trim() !== sh.project.name; };
+    // A rename in the General card replaces sh.project: show (and expect) the new name.
+    sh.onProjectChange = () => { nameEl.textContent = sh.project.name; sync(); };
+    confirmInput.addEventListener('input', sync);
     del.addEventListener('click', () => withBusy(del, async () => {
       try {
         await api('projects/' + enc(p.id), { method: 'DELETE' });
@@ -1586,11 +1614,11 @@
         toast(`Project “${sh.project.name}” deleted`, 'success');
         navigate('/projects');
       } catch (e) { toastError(e); }
-    }).then(() => { if (del.isConnected) del.disabled = confirmInput.value.trim() !== sh.project.name; }));
+    }).then(() => { if (del.isConnected) sync(); }));
     return h('section', { class: 'card danger-zone' },
       h('div', { class: 'card-head' }, h('div', null, h('h2', null, 'Delete project'),
         h('p', { class: 'muted' }, 'Permanently removes the project with all its transcripts, audio files, API keys and members. This cannot be undone.'))),
-      h('div', { class: 'inline-form' }, field(['Type ', h('strong', null, p.name), ' to confirm'], confirmInput), del));
+      h('div', { class: 'inline-form' }, field(['Type ', nameEl, ' to confirm'], confirmInput), del));
   }
 
   function metaItem(label, value) {
@@ -1630,8 +1658,10 @@
 
     const sections = [];
     const section = (id, title, ...content) => {
-      const el = h('section', { class: 'card', id: 'docs-' + id }, h('h2', null, title), content);
-      sections.push({ title, el });
+      // tabindex -1: the table of contents moves keyboard focus to the heading it scrolls to.
+      const heading = h('h2', { tabindex: '-1' }, title);
+      const el = h('section', { class: 'card', id: 'docs-' + id }, heading, content);
+      sections.push({ title, el, heading });
       return el;
     };
     const engineState = (e) => h('span', { class: ['badge', engines.includes(e) ? 'ok' : 'bad'] }, `${ENGINE_LABELS[e]}: ${engines.includes(e) ? 'enabled' : 'disabled'}`);
@@ -1655,11 +1685,15 @@
       h('h3', null, 'Queue a job and get notified'),
       h('p', null, 'Without ', h('code', null, 'wait'), ', the API answers ', h('code', null, '202'), ' with a queued transcription right away. Poll it, or pass a ', h('code', null, 'webhook_url'),
         ' (defaults to the project webhook). ', h('code', null, 'metadata'), ' is any JSON object (≤ 4 KB) echoed back in results and webhooks.'),
-      shellCode('Upload asynchronously', (k) => curl(k, ['-X POST "' + base + '/api/v1/transcriptions"', auth(k), '-F "file=@call.mp3"', `-F "engine=${asyncEngine}"`,
-        '-F "webhook_url=https://example.com/hooks/transcribe"', k === 'ps' ? '-F "metadata=<metadata.json"' : `-F 'metadata={"call_id":"A-1001"}'`])),
+      shellCode('Upload asynchronously', (k) => [
+        // PowerShell 5.1 mangles quotes inside native arguments, so the metadata JSON goes through a file.
+        k === 'ps' && `'{"call_id":"A-1001"}' | Set-Content -Encoding ascii metadata.json`,
+        curl(k, ['-X POST "' + base + '/api/v1/transcriptions"', auth(k), '-F "file=@call.mp3"', `-F "engine=${asyncEngine}"`,
+          '-F "webhook_url=https://example.com/hooks/transcribe"', k === 'ps' ? '-F "metadata=<metadata.json"' : `-F 'metadata={"call_id":"A-1001"}'`]),
+      ].filter(Boolean).join('\n')),
       h('p', { class: 'muted small' }, 'Optional fields: ', h('code', null, 'language'), ' (ISO-639-1, omit to auto-detect), ', h('code', null, 'task'), ' (transcribe | translate), ',
         h('code', null, 'engine'), ' (cloud | worker), ', h('code', null, 'prompt'), ' (cloud only, ≤ 1000 chars).',
-        ' ', h('code', null, 'translate'), ' always produces English.'),
+        ' ', h('code', null, 'translate'), ' always produces English (on the PC worker it needs ', h('code', null, 'TRANSLATE_MODEL'), ', see PC worker below).'),
       h('h3', null, 'Response'),
       codeBlock(JSON.stringify(sampleTranscription(p.id), null, 2), 'JSON'));
 
@@ -1691,7 +1725,14 @@
         h('li', null, 'Create a ', h('strong', null, 'Transcribe API'), ' credential: Base URL ', h('code', null, base), ' and an API key from this project.'),
         h('li', null, 'Add the ', h('strong', null, 'Transcribe API'), ' node after a node that outputs a binary file (property ', h('code', null, 'data'), '), operation ', h('strong', null, 'Transcribe'), '.'),
         h('li', null, 'Keep ', h('strong', null, 'Wait for Completion'), ' on to get the finished transcript in the same run (uses ', h('code', null, 'wait=true'), ' for cloud, polls for the PC worker).')),
-      codeBlock(['cd n8n-nodes-transcribe-api && npm pack', 'mkdir -p ~/.n8n/nodes && cp n8n-nodes-transcribe-api-*.tgz ~/.n8n/nodes/', 'cd ~/.n8n/nodes && npm install --omit=peer --ignore-scripts ./n8n-nodes-transcribe-api-*.tgz', '# then restart n8n'].join('\n'), 'Install the node'),
+      shellCode('Install the node', (k) => (k === 'ps'
+        ? ['Set-Location n8n-nodes-transcribe-api; npm pack',
+          'New-Item -ItemType Directory -Force "$HOME\\.n8n\\nodes" | Out-Null',
+          'Copy-Item n8n-nodes-transcribe-api-*.tgz "$HOME\\.n8n\\nodes"',
+          'Set-Location "$HOME\\.n8n\\nodes"; npm install --omit=peer --ignore-scripts (Get-Item .\\n8n-nodes-transcribe-api-*.tgz).FullName',
+          '# then restart n8n']
+        : ['cd n8n-nodes-transcribe-api && npm pack', 'mkdir -p ~/.n8n/nodes && cp n8n-nodes-transcribe-api-*.tgz ~/.n8n/nodes/',
+          'cd ~/.n8n/nodes && npm install --omit=peer --ignore-scripts ./n8n-nodes-transcribe-api-*.tgz', '# then restart n8n']).join('\n')),
       h('h3', null, 'Option B — built-in HTTP Request node'),
       h('ol', null,
         h('li', null, 'Method ', h('strong', null, 'POST'), ', URL ', h('code', null, base + '/api/v1/transcriptions'), '.'),
@@ -1710,14 +1751,19 @@
         h('li', null, 'Copy ', h('code', null, '.env.example'), ' to ', h('code', null, '.env'), ' and fill it in — the token is one of the ', h('code', null, "worker.tokens"), ' values in the server’s ', h('code', null, 'config.php'), '.'),
         h('li', null, 'Start it with ', h('code', null, 'start-worker.bat'), ' (or ', h('code', null, 'node worker.js'), '; add ', h('code', null, '--once'), ' to process one job and exit).'),
         h('li', null, 'Upload with ', h('code', null, 'engine=worker'), '. The worker polls for jobs, reports progress and posts the transcript back. If the PC goes offline mid-job, the job is re-queued after the lease expires.')),
-      codeBlock(['API_BASE=' + base, 'WORKER_TOKEN=paste-a-token-from-config.php', 'WORKER_NAME=office-pc', 'MODEL=onnx-community/whisper-large-v3-turbo', 'DEVICE=cpu', 'DTYPE=q8', 'POLL_SECONDS=10'].join('\n'), 'worker/.env'));
+      codeBlock(['API_BASE=' + base, 'WORKER_TOKEN=paste-a-token-from-config.php', 'WORKER_NAME=office-pc', 'MODEL=onnx-community/whisper-large-v3-turbo', 'DEVICE=cpu', 'DTYPE=q4', 'POLL_SECONDS=10',
+        '# Only needed for task=translate (large-v3-turbo cannot translate):', '# TRANSLATE_MODEL=onnx-community/whisper-small'].join('\n'), 'worker/.env'),
+      h('p', { class: 'muted small' }, h('code', null, 'DTYPE=q4'), ' is what ', h('code', null, '.env.example'), ' ships: with large-v3-turbo, ', h('code', null, 'q8'),
+        ' drops and repeats sentences. Translation jobs (', h('code', null, 'task=translate'), ') need ', h('code', null, 'TRANSLATE_MODEL'),
+        ' on the worker; without it they fail with a clear error instead of returning untranslated text.'));
 
     const errors = section('errors', 'Errors',
       h('p', null, 'Errors use the HTTP status plus ', h('code', null, '{"error":{"code":"…","message":"…"}}'), '.'),
       h('div', { class: 'table-wrap' }, h('table', { class: 'simple' },
         h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'HTTP'), h('th', { scope: 'col' }, 'Code'), h('th', { scope: 'col' }, 'Meaning'))),
         h('tbody', null, [
-          ['401', 'invalid_api_key', 'Missing, unknown or revoked key.'],
+          ['401', 'unauthorized', 'No API key was sent.'],
+          ['401', 'invalid_api_key', 'Malformed, unknown or revoked key.'],
           ['404', 'not_found', 'No such transcription in this project.'],
           ['409', 'not_ready', 'Format download requested before completion.'],
           ['413', 'file_too_large', `Over ${conf.max_upload_mb || 100} MB (cloud: ${conf.cloud_max_mb || 25} MB — use engine=worker).`],
@@ -1731,7 +1777,13 @@
       h('div', { class: 'docs-intro' },
         h('div', null, h('h2', null, 'API documentation'), h('p', { class: 'muted' }, 'Examples are pre-filled with this server’s address.')),
         h('div', { class: 'segmented', role: 'group', 'aria-label': 'Shell for examples' }, toggleBtns)),
-      h('div', { class: 'toc' }, sections.map((s) => h('button', { type: 'button', onclick: () => s.el.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, s.title))));
+      h('div', { class: 'toc' }, sections.map((s) => h('button', {
+        type: 'button',
+        onclick: () => {
+          s.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          s.heading.focus({ preventScroll: true });
+        },
+      }, s.title))));
 
     panel.replaceChildren(h('div', { class: 'docs' }, intro, quick, transcribe, results, webhooks, n8n, worker, errors));
   }
@@ -1810,9 +1862,17 @@
     ctx.onCleanup(() => player.destroy());
     const content = h('div', { class: 'viewer' });
     const backHref = `#/projects/${enc(t.project_id)}/transcriptions`;
+    let body = null;
 
+    // Full re-render, keeping keyboard focus on the equivalent control (same label) when it still exists.
     function render() {
-      content.replaceChildren(viewerHead(t, player, () => remove()), viewerBody(t, player));
+      const focused = content.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+      body = viewerBody(t, player);
+      content.replaceChildren(viewerHead(t, player, () => remove()), body);
+      if (focused) {
+        const again = Array.from(content.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')).find((el) => focusKey(el) === focused);
+        if (again) again.focus();
+      }
     }
 
     async function remove() {
@@ -1837,7 +1897,10 @@
         try {
           const nt = await api('transcriptions/' + enc(id));
           if (!ctx.alive) return;
-          if (nt.status !== t.status || nt.progress !== t.progress) {
+          if (nt.status === t.status && nt.progress !== t.progress && body && body.updateProgress) {
+            t = nt;
+            body.updateProgress(t.progress); // in place: focus and screen-reader position stay put
+          } else if (nt.status !== t.status || nt.progress !== t.progress) {
             t = nt;
             render();
             if (t.status === 'completed') toast('Transcript ready', 'success');
@@ -1853,6 +1916,11 @@
     setView(h('a', { class: 'back', href: backHref }, icon('arrowLeft'), projectName || 'Back to project'), content);
     document.body.append(player.el);
     if (isActive(t)) poll();
+  }
+
+  /** Identifies a control across re-renders: tag plus accessible label (aria-label, else its text). */
+  function focusKey(el) {
+    return `${el.tagName}|${el.getAttribute('aria-label') || el.textContent.trim()}`;
   }
 
   function viewerHead(t, player, onDelete) {
@@ -1916,13 +1984,24 @@
     }
     if (t.status !== 'completed') {
       const processing = t.status === 'processing';
-      return h('section', { class: 'card' }, h('div', { class: 'pending', role: 'status' },
+      const title = (progress) => (processing ? `Transcribing${progress != null ? ` · ${progress}%` : '…'}` : 'Queued');
+      const heading = h('h2', null, title(t.progress));
+      const bar = processing ? h('progress', { max: '100', 'aria-label': 'Transcription progress' }) : null;
+      const card = h('section', { class: 'card' }, h('div', { class: 'pending', role: 'status' },
         processing ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : icon('clock', 'state-icon'),
-        h('h2', null, processing ? `Transcribing${t.progress != null ? ` · ${t.progress}%` : '…'}` : 'Queued'),
-        processing && h('progress', { max: '100', value: t.progress != null ? String(t.progress) : null, 'aria-label': 'Transcription progress' }),
+        heading,
+        bar,
         h('p', { class: 'muted' }, t.engine === 'worker' && !processing
           ? 'Waiting for a PC worker to pick this up. Make sure the worker is running (see Docs → PC worker). This page updates automatically.'
           : 'This page updates automatically — you can also leave and come back later.')));
+      card.updateProgress = (progress) => {
+        heading.textContent = title(progress);
+        if (!bar) return;
+        if (progress != null) bar.value = progress;
+        else bar.removeAttribute('value'); // indeterminate
+      };
+      card.updateProgress(t.progress);
+      return card;
     }
     return transcriptCard(t, player);
   }

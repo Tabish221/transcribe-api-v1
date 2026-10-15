@@ -1,0 +1,37 @@
+# Transcribe API demos - files that must NOT go into git.
+
+# Secrets: the shared settings file (API key + webhook secret) and Laravel's own .env.
+.env
+.env.*
+!.env.example
+
+# Installed packages and build output (npm install / composer install / npm run build make them again).
+node_modules/
+dist/
+vendor/
+
+# Results written by the demos (transcripts, subtitles, webhook payloads).
+output/
+results/
+
+# Audio files. They can contain private phone calls.
+# Note: this also ignores sample/clip.mp3. After a fresh clone, put any short .mp3 there.
+*.mp3
+
+# Laravel runtime files (6-laravel-app has its own .gitignore files for the rest).
+6-laravel-app/database/database.sqlite
+6-laravel-app/storage/app/private/audio/
+.phpunit.result.cache
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs and editor / OS files
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

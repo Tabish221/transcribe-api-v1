@@ -26,6 +26,25 @@ final class Installer
         return is_file(self::lockFile($storagePath));
     }
 
+    /**
+     * True once the app is installed: the lock file exists OR a config.php is already in place
+     * (e.g. created by hand after "could not write config.php", or kept while storage/ was replaced).
+     */
+    public static function isInstalled(string $configPath, string $storagePath): bool
+    {
+        return self::isLocked($storagePath) || is_file($configPath);
+    }
+
+    /**
+     * translate_model for a provider. OpenAI's /audio/translations only serves whisper-1; null keeps the
+     * documented default (whisper-large-v3, the Groq model that can translate).
+     */
+    public static function translateModelFor(string $cloudBaseUrl): ?string
+    {
+        $host = strtolower((string) parse_url(trim($cloudBaseUrl), PHP_URL_HOST));
+        return $host === 'api.openai.com' ? 'whisper-1' : null;
+    }
+
     /** @return array<int, array{label:string, ok:bool, detail:string}> */
     public static function requirements(string $storagePath): array
     {
@@ -53,8 +72,9 @@ final class Installer
     /**
      * Runs the installation.
      * @param array $o config_path, storage_path, db{driver,host,port,name,user,pass,sqlite_path},
-     *                 admin{name,email,password}, cloud{base_url,api_key,model}, base_url,
-     *                 allow_private_webhooks, allow_registration, worker_token, default_engine
+     *                 admin{name,email,password}, cloud{base_url,api_key,model,translate_model}, base_url,
+     *                 allow_private_webhooks, allow_registration, worker_token, default_engine,
+     *                 force (CLI only: replace an existing config.php)
      * @return array{config_path:string, config_written:bool, config_php:string, worker_token:string, storage_path:string}
      */
     public static function install(array $o): array
@@ -63,7 +83,10 @@ final class Installer
         $configDir = dirname($configPath);
         $storage = rtrim(str_replace('\\', '/', (string) ($o['storage_path'] ?: self::defaultStoragePath($configPath))), '/');
         if (self::isLocked($storage)) {
-            throw new \RuntimeException('Already installed (' . self::lockFile($storage) . ' exists). Delete it to run the installer again.');
+            throw new \RuntimeException('Already installed (storage/installed.lock exists). Delete it to run the installer again.');
+        }
+        if (is_file($configPath) && empty($o['force'])) {
+            throw new \RuntimeException('Already installed (config.php exists). Move it aside to run the installer again.');
         }
 
         // Validate input before touching anything.
@@ -78,6 +101,12 @@ final class Installer
         $engine = (string) ($o['default_engine'] ?? '');
         $cloud = array_filter((array) ($o['cloud'] ?? []), static fn ($v): bool => is_string($v) && trim($v) !== '');
         $cloud = array_map('trim', $cloud);
+        if (!isset($cloud['translate_model'])) {
+            $translateModel = self::translateModelFor($cloud['base_url'] ?? '');
+            if ($translateModel !== null) {
+                $cloud['translate_model'] = $translateModel;
+            }
+        }
         if ($engine === '') {
             $engine = isset($cloud['api_key']) ? 'cloud' : 'worker';
         }
@@ -118,6 +147,12 @@ final class Installer
             Users::create($name, $email, $password, true);
         }
 
+        // Lock first, independently of config.php: if config.php cannot be written the owner creates it by
+        // hand, and the installer must already be closed by then.
+        if (@file_put_contents(self::lockFile($storage), 'Installed ' . gmdate('c') . "\n") === false) {
+            throw new \RuntimeException('Cannot write storage/installed.lock, so the installer cannot lock itself. Make the storage folder writable and run it again.');
+        }
+
         $config = Config::merge(Config::defaults($configDir), [
             'base_url' => trim((string) ($o['base_url'] ?? '')),
             'db' => $db,
@@ -132,7 +167,6 @@ final class Installer
         $written = self::writeFile($configPath, $php);
         if ($written) {
             @chmod($configPath, 0640);
-            file_put_contents(self::lockFile($storage), 'Installed ' . gmdate('c') . "\n");
         }
         return [
             'config_path' => $configPath,
@@ -186,12 +220,56 @@ final class Installer
             'name' => trim((string) ($db['name'] ?? '')),
             'user' => trim((string) ($db['user'] ?? '')),
             'pass' => (string) ($db['pass'] ?? ''),
-            'sqlite_path' => str_replace('\\', '/', $sqlite !== '' ? $sqlite : $storage . '/app.sqlite'),
+            // A custom SQLite path only matters (and is only checked) for the sqlite driver.
+            'sqlite_path' => $driver === 'sqlite' && $sqlite !== '' ? self::sqlitePath($sqlite, $storage) : $storage . '/app.sqlite',
         ];
         if ($driver === 'mysql' && ($out['name'] === '' || $out['user'] === '')) {
             throw new \RuntimeException('MySQL needs a database name and user');
         }
         return $out;
+    }
+
+    /**
+     * The SQLite file must be a .sqlite/.sqlite3/.db file (never something the web server would execute,
+     * such as .php) and, when it is inside the app folder, inside the storage folder (which denies web access).
+     */
+    private static function sqlitePath(string $path, string $storage): string
+    {
+        $path = self::normalizePath($path);
+        if (str_contains($path, "\0") || preg_match('#^([A-Za-z]:)?/#', $path) !== 1) {
+            throw new \RuntimeException('The SQLite file must be an absolute path');
+        }
+        if (preg_match('/\.(sqlite3?|db)$/i', $path) !== 1) {
+            throw new \RuntimeException('The SQLite file name must end in .sqlite, .sqlite3 or .db');
+        }
+        if (self::isInside($path, self::normalizePath(TAPI_SERVER_DIR)) && !self::isInside($path, self::normalizePath($storage))) {
+            throw new \RuntimeException('Keep the SQLite file in the storage folder or outside the web root');
+        }
+        return $path;
+    }
+
+    /** Forward slashes, "." and ".." segments resolved (no filesystem access, the file may not exist yet). */
+    private static function normalizePath(string $path): string
+    {
+        $path = str_replace('\\', '/', $path);
+        $prefix = preg_match('#^([A-Za-z]:)?/#', $path, $m) === 1 ? $m[0] : '';
+        $parts = [];
+        foreach (explode('/', substr($path, strlen($prefix))) as $part) {
+            if ($part === '..') {
+                array_pop($parts);
+            } elseif ($part !== '' && $part !== '.') {
+                $parts[] = $part;
+            }
+        }
+        return $prefix . implode('/', $parts);
+    }
+
+    private static function isInside(string $path, string $dir): bool
+    {
+        $dir = rtrim($dir, '/') . '/';
+        return PHP_OS_FAMILY === 'Windows'
+            ? str_starts_with(strtolower($path), strtolower($dir))
+            : str_starts_with($path, $dir);
     }
 
     private static function ensureDir(string $dir): bool

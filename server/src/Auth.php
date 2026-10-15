@@ -116,6 +116,23 @@ final class Auth
         }
     }
 
+    /**
+     * Login/register have no CSRF token, so block login CSRF another way: the body must be JSON
+     * (a cross-site HTML form cannot send application/json without a CORS preflight, which fails) and an
+     * opaque "Origin: null" (sandboxed iframes, cross-origin redirects) is refused.
+     */
+    public static function checkSignInRequest(Request $request): void
+    {
+        if ($request->origin() === 'null') {
+            throw new ApiException(403, 'csrf_failed', 'Cross-origin request rejected');
+        }
+        self::checkOrigin($request);
+        $type = strtolower(trim(explode(';', (string) $request->header('Content-Type'))[0]));
+        if ($type !== 'application/json') {
+            throw new ApiException(403, 'csrf_failed', 'Sign-in requests must be sent as JSON (Content-Type: application/json)');
+        }
+    }
+
     /** Rejects cross-origin dashboard writes (defence in depth on top of the CSRF token). */
     public static function checkOrigin(Request $request): void
     {

@@ -5,6 +5,7 @@ import { env, pipeline, Tensor, LogLevel } from '@huggingface/transformers';
 import { SAMPLE_RATE } from './audio.js';
 import { PermanentError, StopError } from './errors.js';
 import { log, elapsed, megabytes } from './log.js';
+import { isoLanguage, whisperLanguage } from './models.js';
 
 const WINDOW = 30;            // seconds of audio Whisper hears at once
 const EDGE = WINDOW - 1;      // a segment ending after this is treated as cut by the window edge
@@ -71,16 +72,16 @@ export async function detectLanguage(asr, audio) {
 export async function transcribe(asr, audio, { language = null, task = 'transcribe', signal, onProgress } = {}) {
   const duration = audio.length / SAMPLE_RATE;
   const opts = { return_timestamps: true, max_new_tokens: MAX_NEW_TOKENS };
-  let lang = language ? String(language).toLowerCase() : null;
+  let lang = language ? whisperLanguage(String(language).toLowerCase()) : null; // ISO "jv" -> Whisper "jw"
 
   if (isMultilingual(asr)) {
     if (lang && lang.length <= 3 && asr.model.generation_config.lang_to_id?.[`<|${lang}|>`] === undefined) {
-      throw new PermanentError(`Language "${lang}" is not supported by this model`);
+      throw new PermanentError(`Language "${isoLanguage(lang)}" is not supported by this model`);
     }
     if (!lang) {
       const t0 = Date.now();
       lang = (await detectLanguage(asr, audio)) ?? 'en';
-      log.info(`Detected language: ${lang} (${elapsed(Date.now() - t0)})`);
+      log.info(`Detected language: ${isoLanguage(lang)} (${elapsed(Date.now() - t0)})`);
     }
     opts.language = lang;
     opts.task = task === 'translate' ? 'translate' : 'transcribe';
@@ -144,7 +145,7 @@ export async function transcribe(asr, audio, { language = null, task = 'transcri
     text: segments.map((s) => s.text).join(' '),
     segments,
     duration: round2(duration),
-    detected_language: lang,
+    detected_language: isoLanguage(lang),
   };
 }
 

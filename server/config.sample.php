@@ -41,7 +41,8 @@ return [
         'base_url' => 'https://api.groq.com/openai/v1',   // or https://api.openai.com/v1
         'api_key' => '',                                  // empty = cloud engine unavailable
         'model' => 'whisper-large-v3-turbo',              // OpenAI: whisper-1
-        'translate_model' => 'whisper-large-v3',          // used for task=translate (POST /audio/translations)
+        'translate_model' => 'whisper-large-v3',          // task=translate (POST /audio/translations); OpenAI: whisper-1
+                                                          // (Groq's turbo and OpenAI's other models cannot translate)
         'max_mb' => 25,                                   // provider upload limit; bigger files need engine=worker
         'timeout' => 600,                                 // seconds per API call
         'max_attempts' => 3,                              // retries for transient errors (timeouts, 429, 5xx)

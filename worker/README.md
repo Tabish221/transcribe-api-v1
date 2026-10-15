@@ -24,9 +24,11 @@ where the last *complete* sentence ended, so sentences crossing a window edge ar
 4. Double-click `start-worker.bat` again. The first start downloads the model (progress is shown),
    later starts take a few seconds. Leave the window open; it shows every job it handles.
 
-Stop it with **Ctrl+C**: a job in progress is handed back to the queue (reported with `retry:true`) so it
-is picked up again later. Press Ctrl+C twice to quit immediately. (Windows then asks
-"Terminate batch job (Y/N)?" — either answer is fine.)
+Stop it with **Ctrl+C**: a job in progress is handed back to the queue right away (without using up one of
+its attempts) so it is picked up again later; the worker then exits after the current 30-second window.
+Closing the window does the same, except that the worker exits as soon as the job is handed back (Windows
+ends the process about 10 s after the window closes). Press Ctrl+C twice to quit immediately. (Windows then
+asks "Terminate batch job (Y/N)?" — either answer is fine.)
 
 To start it automatically, put a shortcut to `start-worker.bat` in the Startup folder
 (`Win+R` → `shell:startup`).
@@ -44,6 +46,7 @@ to this folder.
 | `WORKER_TOKEN` | — | Worker token from `config.php` (required, never printed) |
 | `WORKER_NAME` | computer name | Shown on jobs in the dashboard |
 | `MODEL` | `onnx-community/whisper-large-v3-turbo` | Any `onnx-community/whisper-*` model |
+| `TRANSLATE_MODEL` | — | Model for `task=translate` jobs when `MODEL` cannot translate (large-v3-turbo, `*.en`), e.g. `onnx-community/whisper-small`. Loaded on first use. Without it such jobs fail with a clear error instead of returning untranslated text |
 | `DEVICE` | `cpu` | `dml` (DirectML GPU, Windows) or `cuda` (Linux); falls back to `cpu` if it fails |
 | `DTYPE` | `q8` | Weight precision: `q4`, `q8`, `fp16`, `fp32`, … or per file: `encoder_model=fp32,decoder_model_merged=q8`. **`.env.example` sets `q4`, see below** |
 | `POLL_SECONDS` | `10` | Pause between checks when the queue is empty |
@@ -84,7 +87,7 @@ Transcribe a file with exactly the same pipeline and get the transcript as JSON:
 ```
 node worker.js --file "C:\calls\call.mp3"                       # JSON on stdout, logs on stderr
 node worker.js --file call.mp3 --language en --out result.json  # save to a file
-node worker.js --file call.mp3 --task translate                 # translate to English
+node worker.js --file call.mp3 --task translate                 # translate to English (uses TRANSLATE_MODEL with turbo)
 node worker.js --file call.mp3 --model onnx-community/whisper-base --dtype fp32
 ```
 
@@ -120,15 +123,20 @@ Failures:
 | What went wrong | Reported as |
 |---|---|
 | Network error, timeout, HTTP 5xx/429 | Retried with backoff (2 s, 4 s, 8 s …); if it keeps failing: `fail` with `retry:true` |
-| Audio cannot be decoded, unsupported language | `fail` with `retry:false` (permanent) |
-| Ctrl+C / window closed | `fail` with `retry:true` (back to the queue) |
+| Audio cannot be decoded, unsupported language, translate job without a model that can translate | `fail` with `retry:false` (permanent) |
+| Ctrl+C / window closed | `fail` with `retry:true, release:true`: back to the queue at once, the attempt is not counted |
+| ffmpeg cannot be started | Checked at start-up (the worker refuses to start). During a job: handed back like Ctrl+C, then the worker exits |
+| Any other error on this PC | `fail` with `retry:true`, then a pause before the next job (doubling each time); after 3 such jobs in a row the worker stops, so one broken PC cannot use up the attempts of the whole queue |
 | Server answers 404 for the job (lease taken over, job deleted) | Job dropped silently |
 | Wrong token / wrong `API_BASE` at start-up | Clear error and exit (no endless retrying) |
 
+Error messages sent to the server never contain local paths (they are replaced by `<local>`).
+
 The temp audio file is deleted after every job, including failures and forced exits.
 
-Exit codes: 0 = normal (also after Ctrl+C in server mode), 1 = error or a `--once` job that failed,
-2 = bad command line, 130 = local mode cancelled with Ctrl+C or a forced quit.
+Exit codes: 0 = normal (also after Ctrl+C in server mode), 1 = error, a `--once` job that failed, or the worker
+stopped itself because this PC cannot run jobs, 2 = bad command line, 130 = local mode cancelled with Ctrl+C,
+console window closed, or a forced quit.
 
 The worker lets Node exit on its own after releasing the model instead of calling `process.exit()` right
 away: with ONNX Runtime on Windows an immediate exit can abort with a libuv assertion (exit code 0xC0000409).
@@ -159,6 +167,13 @@ with one queued job, for trying the worker by hand.
 - `text` is the segment texts joined with spaces; local-mode segments include `id` (the server assigns ids itself).
 - When the job has a language, `detected_language` is that language; otherwise the detected ISO code.
 - English-only models (`*.en`) ignore `language`/`task` (they cannot translate).
+- `task=translate`: the large-v3 turbo models were not trained for translation (openai/whisper: they return
+  the original language), so they never handle it. Such jobs use `TRANSLATE_MODEL`, or fail with `retry:false`
+  and a message saying so when it is not set.
+- Language codes: the server uses ISO-639-1. Whisper calls Javanese `jw` instead of `jv`; the worker maps it
+  both ways.
+- `release:true` on `fail` is an addition to SPEC 8: the server re-queues the job and gives the claim's attempt
+  back, so stopping a worker during long jobs can never use up `worker.max_attempts`.
 - Up to 224 new tokens per 30 s window (openai-whisper's limit). transformers.js's own in-window seek is
   bypassed this way so each window is decoded once, as in the browser app.
 - If a window has no usable sentence end (silence, or a sentence longer than the window), the worker moves on by

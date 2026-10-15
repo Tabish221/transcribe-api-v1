@@ -244,7 +244,7 @@ Every mutating fetch sends `X-CSRF-Token`. Escape all user-provided text (no inn
 
 Node.js ≥ 20, ESM. Deps: `@huggingface/transformers`, `ffmpeg-static`. Config via `.env` (parse it yourself; no dotenv dep needed):
 `API_BASE` (e.g. https://opraviq.com/transcribe), `WORKER_TOKEN`, `WORKER_NAME` (default hostname), `MODEL`
-(default `onnx-community/whisper-large-v3-turbo`), `DEVICE` (`cpu` default; `dml`/`cuda` optional), `DTYPE` (default `q8`),
+(default `onnx-community/whisper-large-v3-turbo`), `DEVICE` (`cpu` default; `dml`/`cuda` optional), `DTYPE` (default `q4` — measured: q8 drops/repeats sentences with large-v3-turbo),
 `POLL_SECONDS` (default 10), `CACHE_DIR` (default `./models`).
 Loop: claim → download audio to temp → ffmpeg-static → 16 kHz mono f32le → loudness normalise (same as browser app) →
 seek-based 30 s windows (each window starts at end of last COMPLETE segment; same algorithm as browser app) →

@@ -31,9 +31,12 @@ Cloud engine (OpenAI-compatible, optional):
   --cloud-base-url=URL       default https://api.groq.com/openai/v1
   --cloud-api-key=KEY        without a key the cloud engine stays disabled
   --cloud-model=MODEL        default whisper-large-v3-turbo
+  --cloud-translate-model=MODEL   model for task=translate (default: whisper-1 for api.openai.com,
+                             else whisper-large-v3)
 
 Other:
   --config-path=FILE         where to write config.php (default: $TAPI_CONFIG or server/config.php)
+  --force                    replace an existing config.php (the lock file must still be deleted first)
   --storage-path=DIR         default: <config dir>/storage
   --base-url=URL             public URL of the app, e.g. https://example.com/transcribe (auto-detected if empty)
   --worker-token=TOKEN       use this worker token instead of generating one (min 16 chars)
@@ -71,6 +74,10 @@ TXT;
             fwrite(STDERR, 'Error: already installed (' . Installer::lockFile($storage) . " exists). Delete it to reinstall.\n");
             return 1;
         }
+        if (is_file($configPath) && !isset($args['force'])) {
+            fwrite(STDERR, "Error: already installed ({$configPath} exists). Move it aside, or pass --force to replace it.\n");
+            return 1;
+        }
         $failed = array_filter(Installer::requirements($storage), static fn (array $c): bool => !$c['ok']);
         foreach ($failed as $check) {
             fwrite(STDERR, "Requirement not met: {$check['label']} ({$check['detail']})\n");
@@ -102,12 +109,14 @@ TXT;
                     'base_url' => self::str($args, 'cloud-base-url'),
                     'api_key' => self::str($args, 'cloud-api-key'),
                     'model' => self::str($args, 'cloud-model'),
+                    'translate_model' => self::str($args, 'cloud-translate-model'),
                 ],
                 'base_url' => self::str($args, 'base-url'),
                 'worker_token' => self::str($args, 'worker-token'),
                 'default_engine' => self::str($args, 'default-engine'),
                 'allow_private_webhooks' => isset($args['allow-private-webhooks']),
                 'allow_registration' => isset($args['allow-registration']),
+                'force' => isset($args['force']),
             ]);
         } catch (\Throwable $e) {
             $field = $e instanceof ApiException && isset($e->extra['field']) ? ' (' . $e->extra['field'] . ')' : '';
@@ -115,7 +124,9 @@ TXT;
             return 1;
         }
         if (!$result['config_written']) {
-            fwrite(STDERR, 'Install failed: could not write ' . $result['config_path'] . "\n");
+            // Tables, admin and the lock file are in place; only config.php is missing.
+            fwrite(STDERR, 'Install incomplete: could not write ' . $result['config_path'] . ". Create it with the content below.\n");
+            echo $result['config_php'];
             return 1;
         }
         echo "Transcribe API installed.\n";

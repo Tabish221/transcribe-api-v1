@@ -6,11 +6,14 @@
 // 1. Installs the server with the CLI installer into tests/tmp/e2e (config.php + storage there), with the
 //    cloud engine pointed at tests/mock-cloud.mjs and private webhooks allowed. config.e2e.php wraps that
 //    config with small upload limits so the 413 paths can be tested; TAPI_CONFIG points at it.
-// 2. Starts php -S 127.0.0.1:8091 server/index.php, the mock cloud (8092) and tests/webhook-receiver.mjs (8093).
+// 2. Starts php -S 127.0.0.1:8091 server/index.php, the mock cloud (8092) and tests/webhook-receiver.mjs (8093);
+//    some checks add short-lived proxies on 8094 (worker request recorder) and 8095 (n8n node, injected errors).
 // 3. Runs every check (routing/static files, dashboard API, public API, the real PC worker, worker API
-//    semantics, cloud engine + cron, webhooks, audio Range, deletes, n8n node via tests/n8n-harness.cjs)
+//    semantics, worker hand-back and start-up checks, installer lock/SQLite rules, login CSRF, cloud engine +
+//    cron, webhooks, audio Range and download CSP, deletes, n8n node via tests/n8n-harness.cjs)
 //    and prints a PASS/FAIL table.
-// 4. Stops every process it started and deletes tests/tmp/e2e (and the MySQL test database).
+// 4. Stops every process it started and deletes tests/tmp/e2e (and the MySQL test database), unless the run
+//    stopped at the port check (then another run owns them).
 // Exit code: 0 when every check passed, 1 otherwise.
 //
 // Options:
@@ -26,7 +29,8 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
 
 // ---------------------------------------------------------------------------------------------
@@ -44,7 +48,8 @@ const { values: opts } = parseArgs({
 
 const IS_WIN = process.platform === 'win32';
 const PHP = process.env.PHP_BIN || (IS_WIN ? 'C:/xampp/php/php.exe' : 'php');
-const PORT = { server: 8091, cloud: 8092, hooks: 8093, proxy: 8094 }; // proxy: worker -> php -S recorder
+// proxy: worker -> php -S recorder; flaky: n8n node -> php -S with injected errors
+const PORT = { server: 8091, cloud: 8092, hooks: 8093, proxy: 8094, flaky: 8095 };
 const BASE = `http://127.0.0.1:${PORT.server}`;
 const CLOUD = `http://127.0.0.1:${PORT.cloud}`;
 const HOOKS = `http://127.0.0.1:${PORT.hooks}`;
@@ -80,8 +85,9 @@ const S = {};
 
 const children = new Set();
 
-function startProcess(name, command, args, { env = {}, cwd = ROOT, stdin = 'ignore' } = {}) {
-  const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: [stdin, 'pipe', 'pipe'], windowsHide: true });
+function startProcess(name, command, args, { env = {}, cwd = ROOT, stdin = 'ignore', ipc = false } = {}) {
+  const stdio = ipc ? [stdin, 'pipe', 'pipe', 'ipc'] : [stdin, 'pipe', 'pipe'];
+  const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio, windowsHide: true });
   const proc = { name, child, stdout: '', stderr: '', exited: null };
   child.stdout.on('data', (chunk) => { proc.stdout += chunk; });
   child.stderr.on('data', (chunk) => { proc.stderr += chunk; });
@@ -312,6 +318,34 @@ function startRecordingProxy() {
   });
 }
 
+/**
+ * Reverse proxy in front of php -S that answers some requests itself: inject(req) returns an HTTP status
+ * to fake (with an HTML body, like a shared host's error page), or null to pass the request on.
+ */
+function startFlakyProxy(inject) {
+  const log = [];
+  const server = http.createServer((req, res) => {
+    const status = inject(req);
+    log.push({ method: req.method, path: req.url, injected: status ?? null });
+    if (status) {
+      req.resume();
+      res.writeHead(status, { 'Content-Type': 'text/html' }).end(`<html><body>Injected HTTP ${status}</body></html>`);
+      return;
+    }
+    const upstream = http.request({ host: '127.0.0.1', port: PORT.server, method: req.method, path: req.url, headers: req.headers }, (up) => {
+      res.writeHead(up.statusCode, up.headers);
+      up.pipe(res);
+    });
+    upstream.on('error', (err) => res.writeHead(502).end(err.message));
+    req.pipe(upstream);
+  });
+  const close = () => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(PORT.flaky, '127.0.0.1', () => resolve({ log, close, url: `http://127.0.0.1:${PORT.flaky}` }));
+  });
+}
+
 function portBusy(port) {
   return new Promise((resolve) => {
     const socket = net.connect({ port, host: '127.0.0.1' });
@@ -417,10 +451,14 @@ async function setup() {
   }) && ready;
   if (!ready) return false;
 
+  // From here on tests/tmp/e2e (and the MySQL test database) belong to this run, so cleanup() may delete
+  // them. A run that stopped at the port check must not: another e2e run (e.g. --keep) is using them.
   fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   fs.mkdirSync(TMP, { recursive: true });
+  S.ownsTmp = true;
 
   if (opts.db === 'mysql') {
+    S.ownsDb = true;
     ready = await check(`MySQL: (re)create database ${MYSQL.name} on ${MYSQL.host}:${MYSQL.port}`, async () => {
       await mysqlServer(`DROP DATABASE IF EXISTS \`${MYSQL.name}\``);
       await mysqlServer(`CREATE DATABASE \`${MYSQL.name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
@@ -444,6 +482,8 @@ async function setup() {
       "$config['cloud']['max_mb'] = 1;",
       "$config['cloud']['max_attempts'] = 2;",
       "$config['webhooks']['timeout'] = 5;",
+      "// 3gp has no entry in the server's audio MIME map: used to test that sniffed types are never served.",
+      "$config['allowed_extensions'] = ['mp3', '3gp'];",
       'return $config;',
       '',
     ].join('\n'));
@@ -553,10 +593,80 @@ async function serverBasics() {
     return `${paths.length} paths`;
   });
 
-  await check('install.php is locked after installation (403 page, no source)', async () => {
+  await check('install.php is locked after installation (403 page, no source, no server paths)', async () => {
     const r = await anon.get('/install.php');
     eq(r.status, 403, 'status');
     assert(!r.text.includes('<?php'), 'install.php source was served');
+    const leaked = [ROOT, STORAGE].flatMap((p) => [p, p.replace(/\\/g, '/')]).filter((p) => r.text.includes(p));
+    assert(leaked.length === 0, `the public lock page shows absolute paths: ${leaked.join(', ')}`);
+  });
+
+  await check('installer stays locked without installed.lock while config.php exists (web GET/POST + CLI)', async () => {
+    const lock = path.join(STORAGE, 'installed.lock');
+    const aside = `${lock}.e2e-aside`;
+    fs.renameSync(lock, aside);
+    try {
+      expectStatus(await anon.get('/install.php'), 403);
+      // A forged form post (own cookie + matching csrf field) must not reach the installer.
+      const form = new URLSearchParams({
+        csrf: 'e2e-csrf', driver: 'sqlite', sqlite_path: '', admin_name: 'Mallory', admin_email: 'attacker@evil.test',
+        admin_password: 'Attacker123', admin_password2: 'Attacker123',
+      });
+      const post = await anon.post('/install.php', { form, headers: { Cookie: 'tapi_install=e2e-csrf', 'Content-Type': 'application/x-www-form-urlencoded' } });
+      eq(post.status, 403, 'POST status');
+      const users = await sql('SELECT COUNT(*) AS n FROM users WHERE email = ?', ['attacker@evil.test']);
+      eq(Number(users.rows[0].n), 0, 'admin created by the forged install');
+      const cli = await run(PHP, installArgs(), { name: 'install-no-lock' });
+      eq(cli.code, 1, `CLI exit code (${oneLine(cli.stderr)})`);
+      assert(/already installed/i.test(cli.stderr) && /config\.php/.test(cli.stderr), `CLI stderr: ${oneLine(cli.stderr)}`);
+    } finally {
+      fs.renameSync(aside, lock);
+    }
+  });
+
+  await check('installer: SQLite path must be .sqlite/.db outside the web root; lock written even when config.php is not', async () => {
+    const dir = path.join(TMP, 'installer');
+    const base = (name, extra) => [
+      'server/install.php', '--driver=sqlite', `--admin-email=${ADMIN.email}`, `--admin-password=${ADMIN.password}`,
+      `--config-path=${path.join(dir, name, 'config.php')}`, ...extra,
+    ];
+    const serverDir = path.join(ROOT, 'server');
+    const localInstall = fs.existsSync(path.join(serverDir, 'storage', 'installed.lock')); // the owner's own dev install
+    const rejected = [
+      [path.join(dir, 'a', 'webroot', 'shell.php'), [], /\.sqlite/],
+      [path.join(serverDir, 'e2e-evil.db'), [], /storage folder or outside the web root/],
+    ];
+    if (!localInstall) {
+      // ".." must not sneak out of the storage folder (validation fails before anything is written there).
+      rejected.push([`${serverDir}/storage/../e2e-evil.sqlite`, [`--storage-path=${path.join(serverDir, 'storage')}`], /storage folder or outside the web root/]);
+    }
+    try {
+      for (const [i, [sqlitePath, extra, message]] of rejected.entries()) {
+        const r = await run(PHP, base(`r${i}`, [`--sqlite-path=${sqlitePath}`, ...extra]), { name: 'install-sqlite-path' });
+        eq(r.code, 1, `exit code for ${sqlitePath}`);
+        assert(message.test(r.stderr), `stderr for ${sqlitePath}: ${oneLine(r.stderr)}`);
+        assert(!fs.existsSync(path.resolve(sqlitePath)), `${sqlitePath} was created`);
+      }
+      if (!localInstall) assert(!fs.existsSync(path.join(serverDir, 'storage', 'installed.lock')), 'server/storage/installed.lock was written');
+      // config.php cannot be written (its folder is a file): tables + lock exist, the config is printed instead.
+      fs.mkdirSync(path.join(dir, 'd'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'd', 'blocker'), 'not a folder');
+      const lockArgs = [
+        'server/install.php', '--driver=sqlite', `--admin-email=${ADMIN.email}`, `--admin-password=${ADMIN.password}`,
+        `--config-path=${path.join(dir, 'd', 'blocker', 'config.php')}`, `--storage-path=${path.join(dir, 'd', 'storage')}`,
+        '--cloud-base-url=https://api.openai.com/v1', '--cloud-api-key=e2e-not-a-real-key',
+      ];
+      const first = await run(PHP, lockArgs, { name: 'install-no-config' });
+      eq(first.code, 1, `exit code (${oneLine(first.stderr)})`);
+      assert(/could not write/i.test(first.stderr), `stderr: ${oneLine(first.stderr)}`);
+      assert(fs.existsSync(path.join(dir, 'd', 'storage', 'installed.lock')), 'installed.lock was not written');
+      assert(first.stdout.includes("'translate_model' => 'whisper-1'"), 'OpenAI install does not set translate_model whisper-1');
+      const again = await run(PHP, lockArgs, { name: 'install-no-config-again' });
+      eq(again.code, 1, 'second run exit code');
+      assert(/already installed/i.test(again.stderr), `second run stderr: ${oneLine(again.stderr)}`);
+    } finally {
+      for (const leftover of ['e2e-evil.db', 'e2e-evil.sqlite']) fs.rmSync(path.join(serverDir, leftover), { force: true });
+    }
   });
 
   await check('config: placeholder or short worker tokens are never accepted', async () => {
@@ -592,6 +702,20 @@ async function dashboardApi() {
     expectStatus(await admin.post('/api/dash/login', { json: { password: 'x' } }), 422, 'validation_error');
   });
 
+  await check('login CSRF: Origin null, form-encoded or text/plain sign-in -> 403 csrf_failed, no session', async () => {
+    const probe = new Client();
+    const attempts = [
+      { json: ADMIN, headers: { Origin: 'null' } },
+      { form: new URLSearchParams(ADMIN) },
+      { form: JSON.stringify(ADMIN), headers: { 'Content-Type': 'text/plain' } },
+    ];
+    for (const attempt of attempts) {
+      const r = expectStatus(await probe.post('/api/dash/login', attempt), 403, 'csrf_failed');
+      assert(!r.setCookies.some((c) => c.startsWith('tapi_session=')), 'a session cookie was set');
+    }
+    expectStatus(await probe.post('/api/dash/register', { form: new URLSearchParams({ name: 'X', email: 'x@example.com', password: 'whatever-123' }) }), 403);
+  });
+
   await check('login -> user + csrf_token + HttpOnly SameSite=Lax cookie', async () => {
     const r = expectStatus(await admin.post('/api/dash/login', { json: ADMIN }), 200);
     eq(r.data.user.email, ADMIN.email, 'user.email');
@@ -611,7 +735,7 @@ async function dashboardApi() {
     eq(r.data.config, {
       allow_registration: false,
       engines: { cloud: true, worker: true },
-      allowed_extensions: ['mp3'],
+      allowed_extensions: ['mp3', '3gp'],
       max_upload_mb: 2,
       cloud_max_mb: 1,
       base_url: `${BASE}/`,
@@ -829,6 +953,14 @@ async function publicApiAuth() {
     return `${cases.length} cases`;
   });
 
+  await check('language: Javanese is stored as ISO "jv" whether sent as jv, jw or javanese', async () => {
+    for (const language of ['jv', 'jw', 'Javanese']) {
+      const t = expectStatus(await api.post('/api/v1/transcriptions', { form: uploadForm({ engine: 'worker', language }) }), 202).data;
+      expectStatus(await api.delete(`/api/v1/transcriptions/${t.id}`), 200); // keep the worker queue empty
+      eq(t.language, 'jv', `language for "${language}"`);
+    }
+  });
+
   await check('list validation: bad limit/status -> 422; limit capped at 100', async () => {
     expectField(expectStatus(await api.get('/api/v1/transcriptions?limit=abc'), 422, 'validation_error'), 'limit');
     expectField(expectStatus(await api.get('/api/v1/transcriptions?status=bogus'), 422, 'validation_error'), 'status');
@@ -950,6 +1082,7 @@ async function workerEngine() {
       eq(r.headers.get('content-type'), mime, `${format} Content-Type`);
       const disposition = r.headers.get('content-disposition') || '';
       assert(disposition.startsWith('attachment;') && disposition.includes(`filename="clip.${format}"`), `${format} Content-Disposition: ${disposition}`);
+      eq(r.headers.get('content-security-policy'), "default-src 'none'; sandbox", `${format} Content-Security-Policy`);
       if (body !== null) eq(r.text, body, `${format} body`);
       else eq(JSON.parse(r.text), t, 'json body');
     }
@@ -1096,13 +1229,107 @@ async function workerApi() {
     eq(t.segments, [{ id: 0, start: 0, end: 1.23, text: 'Hello' }, { id: 1, start: 1.23, end: 1.23, text: 'world' }], 'segments');
     eq((await claim()).status, 204, 'queue empty afterwards');
   });
+
+  await check('fail retry+release (hand-back) re-queues and returns the attempt, even at worker.max_attempts', async () => {
+    const id = await uploadWorkerJob();
+    eq(expectStatus(await claim(), 200).data.job.id, id, 'claim');
+    await sql('UPDATE transcriptions SET attempts = 3 WHERE id = ?', [id]); // the last allowed attempt
+    eq(expectStatus(await job(id, 'fail', { error: 'Worker stopped before finishing the job', retry: true, release: true }), 200).data, { ok: true }, 'body');
+    const t = await getTr(id);
+    eq([t.status, t.progress, t.error], ['queued', null, null], 'after hand-back');
+    eq(Number((await row(id)).attempts), 2, 'attempts');
+    eq(expectStatus(await claim(), 200).data.job.id, id, 'claimed again');
+    expectStatus(await job(id, 'fail', { error: 'e2e cleanup', retry: false }), 200);
+    eq((await claim()).status, 204, 'queue empty afterwards');
+  });
+}
+
+async function workerResilience() {
+  heading('Worker: settings, start-up checks, hand-back');
+  const api = S.api;
+  const workerLib = (file) => import(pathToFileURL(path.join(ROOT, 'worker', 'lib', file)).href);
+  const workerEnv = (extra = {}) => ({
+    API_BASE: BASE, WORKER_TOKEN, WORKER_NAME: 'e2e-worker', MODEL: 'onnx-community/whisper-tiny', DTYPE: 'fp32',
+    DEVICE: 'cpu', POLL_SECONDS: '1', HEARTBEAT_SECONDS: '5', ...extra,
+  });
+  const row = async (id) => (await sql('SELECT status, attempts, progress FROM transcriptions WHERE id = ?', [id])).rows[0];
+
+  await check('worker .env parser: empty values with comments, quoted values with comments', async () => {
+    const { parseEnvFile } = await workerLib('config.js');
+    // .env.example with every optional "# KEY=" line switched on.
+    const example = fs.readFileSync(path.join(ROOT, 'worker', '.env.example'), 'utf8').replace(/^# ([A-Z_]+=)/gm, '$1');
+    const vars = parseEnvFile(example);
+    eq([vars.FFMPEG_PATH, vars.TEMP_DIR, vars.LOG_LEVEL, vars.DTYPE], ['', './tmp', 'info', 'q4'], '.env.example values');
+    eq(parseEnvFile('WORKER_TOKEN="abc123" # my token\nWORKER_NAME=\'Office PC\' #c\nA=   # note\nB=ab#cd\nexport C=x # y'),
+      { WORKER_TOKEN: 'abc123', WORKER_NAME: 'Office PC', A: '', B: 'ab#cd', C: 'x' }, 'parsed');
+  });
+
+  await check('worker models: turbo never translates (TRANSLATE_MODEL or a clear permanent error); jv <-> jw', async () => {
+    const { modelIdFor, whisperLanguage, isoLanguage } = await workerLib('models.js');
+    const { PermanentError } = await workerLib('errors.js');
+    const turbo = 'onnx-community/whisper-large-v3-turbo';
+    eq(modelIdFor('transcribe', { model: turbo, translateModel: '' }), turbo, 'transcribe');
+    eq(modelIdFor('translate', { model: turbo, translateModel: 'onnx-community/whisper-small' }), 'onnx-community/whisper-small', 'translate with TRANSLATE_MODEL');
+    eq(modelIdFor('translate', { model: 'onnx-community/whisper-tiny', translateModel: '' }), 'onnx-community/whisper-tiny', 'translate with a multilingual model');
+    let thrown = null;
+    try { modelIdFor('translate', { model: turbo, translateModel: '' }); } catch (err) { thrown = err; }
+    assert(thrown instanceof PermanentError && /TRANSLATE_MODEL/.test(thrown.message), `turbo + translate without TRANSLATE_MODEL: ${thrown?.message ?? 'no error'}`);
+    eq([whisperLanguage('jv'), isoLanguage('jw'), whisperLanguage('en'), isoLanguage(null)], ['jw', 'jv', 'en', null], 'language mapping');
+  });
+
+  await check('worker refuses to start without a working ffmpeg (exit 1, queued job untouched)', async () => {
+    const id = expectStatus(await api.post('/api/v1/transcriptions', { form: uploadForm({ engine: 'worker' }) }), 202).data.id;
+    try {
+      const r = await run(process.execPath, ['worker.js', '--once', '--env', 'none'], {
+        cwd: path.join(ROOT, 'worker'),
+        env: workerEnv({ FFMPEG_PATH: path.join(TMP, 'missing', 'ffmpeg.exe') }),
+        name: 'worker-no-ffmpeg',
+        timeoutMs: 60000,
+      });
+      eq(r.code, 1, `exit code (${oneLine(r.stdout + r.stderr)})`);
+      assert(/ffmpeg cannot be started/.test(r.stdout + r.stderr), `output: ${oneLine(r.stdout + r.stderr)}`);
+      const j = await row(id);
+      eq([j.status, Number(j.attempts)], ['queued', 0], 'job status/attempts');
+    } finally {
+      expectStatus(await api.delete(`/api/v1/transcriptions/${id}`), 200);
+    }
+  });
+
+  if (opts['skip-worker']) {
+    console.log('  (skipped the worker hand-back run: --skip-worker)');
+    return;
+  }
+
+  await check('worker shutdown mid-job hands the job back at once (queued, attempt returned)', async () => {
+    const id = expectStatus(await api.post('/api/v1/transcriptions', { form: uploadForm({ engine: 'worker' }) }), 202).data.id;
+    const proc = startProcess('worker-stop', process.execPath, ['worker.js', '--once', '--env', 'none'], {
+      cwd: path.join(ROOT, 'worker'), env: workerEnv(), ipc: true,
+    });
+    try {
+      await waitFor('the worker to claim the job', async () => {
+        if (proc.exited) throw new Error(`worker exited early: ${oneLine(tail(proc.stdout + proc.stderr, 6), 400)}`);
+        return (await row(id)).status === 'processing';
+      }, { timeoutMs: 120000, intervalMs: 100 });
+      proc.child.send('shutdown');
+      const exited = await Promise.race([proc.done, delay(60000).then(() => null)]);
+      assert(exited, `worker did not exit after "shutdown": ${oneLine(tail(proc.stdout + proc.stderr, 6), 400)}`);
+      eq(exited.code, 0, `exit code (${oneLine(tail(proc.stdout + proc.stderr, 6), 400)})`);
+      const j = await row(id);
+      eq([j.status, Number(j.attempts), j.progress], ['queued', 0, null], 'job after the hand-back');
+      assert(/handed back to the queue/.test(proc.stdout + proc.stderr), 'no hand-back in the worker log');
+    } finally {
+      killProcess(proc);
+      await proc.done;
+      await api.delete(`/api/v1/transcriptions/${id}`);
+    }
+  });
 }
 
 async function cloudEngine() {
   heading('Cloud engine + cron');
   const api = S.api;
   const getTr = async (id) => expectStatus(await api.get(`/api/v1/transcriptions/${id}`), 200).data;
-  const upload = (fields) => api.post('/api/v1/transcriptions', { form: uploadForm({ engine: 'cloud', ...fields }) });
+  const upload = (fields, file) => api.post('/api/v1/transcriptions', { form: uploadForm({ engine: 'cloud', ...fields }, file) });
 
   await check('wait=true -> 200 completed via the mock (language, prompt sent)', async () => {
     await cloudMock.reset();
@@ -1139,6 +1366,20 @@ async function cloudEngine() {
     const [q] = await cloudMock.requests();
     eq(q.problems, [], 'mock assertions');
     eq([q.path, q.fields.model, 'language' in q.fields, q.fields.response_format], ['/v1/audio/translations', 'whisper-large-v3', false, 'verbose_json'], 'request');
+  });
+
+  await check('long or dot-only file names keep their extension (stored name and the name sent to the provider)', async () => {
+    const long = `${'Customer call recording '.repeat(9)}2026-10-14.mp3`; // 230 characters
+    for (const [name, expected] of [[long, null], ['..mp3', 'audio.mp3']]) {
+      await cloudMock.reset();
+      const t = expectStatus(await upload({ wait: 'true' }, { name }), 200).data;
+      eq(t.status, 'completed', `status for ${name.slice(0, 20)}`);
+      assert(t.filename.length <= 200 && t.filename.endsWith('.mp3'), `stored filename ${JSON.stringify(t.filename)}`);
+      if (expected) eq(t.filename, expected, 'stored filename');
+      const [q] = await cloudMock.requests();
+      assert(q.file?.filename?.endsWith('.mp3'), `provider got file name ${JSON.stringify(q.file?.filename)}`);
+      expectStatus(await api.delete(`/api/v1/transcriptions/${t.id}`), 200);
+    }
   });
 
   await check('async cloud job stays queued under php -S, then cron completes it', async () => {
@@ -1222,6 +1463,7 @@ async function audioAndDelete() {
     const size = CLIP_BYTES.length;
     const full = expectStatus(await admin.get(route), 200);
     eq([full.headers.get('content-type'), full.headers.get('accept-ranges'), Number(full.headers.get('content-length'))], ['audio/mpeg', 'bytes', size], 'full headers');
+    eq(full.headers.get('content-security-policy'), "default-src 'none'; sandbox", 'Content-Security-Policy');
     assert(full.body.equals(CLIP_BYTES), 'full body differs');
     const part = expectStatus(await admin.get(route, { headers: { Range: 'bytes=100-199' } }), 206);
     eq([part.headers.get('content-range'), Number(part.headers.get('content-length'))], [`bytes 100-199/${size}`, 100], 'range headers');
@@ -1233,6 +1475,22 @@ async function audioAndDelete() {
     const bad = await admin.get(route, { headers: { Range: `bytes=${size + 10}-` } });
     eq([bad.status, bad.headers.get('content-range')], [416, `bytes */${size}`], 'unsatisfiable range');
     expectStatus(await new Client().get(route), 401, 'unauthorized');
+  });
+
+  await check('audio of an unmapped extension is never served with a sniffed text/html type (stored XSS)', async () => {
+    const html = Buffer.from('<html><body><script>alert(document.domain)</script>hello</body></html>\n'.repeat(4));
+    const t = expectStatus(await admin.post(`/api/dash/projects/${S.p1}/transcriptions`, {
+      form: uploadForm({ engine: 'worker' }, { bytes: html, name: 'evil.3gp', type: 'video/3gpp' }),
+    }), 202).data;
+    try {
+      const stored = (await sql('SELECT mime FROM transcriptions WHERE id = ?', [t.id])).rows[0].mime;
+      eq(stored, 'text/html', 'sniffed type stored at upload (makes this check meaningful)');
+      const r = expectStatus(await admin.get(`/api/dash/transcriptions/${t.id}/audio`), 200);
+      eq(r.headers.get('content-type'), 'application/octet-stream', 'Content-Type');
+      eq(r.headers.get('content-security-policy'), "default-src 'none'; sandbox", 'Content-Security-Policy');
+    } finally {
+      expectStatus(await admin.delete(`/api/dash/transcriptions/${t.id}`), 200); // keep the worker queue empty
+    }
   });
 
   await check('audio deleted by retention -> audio 404, transcript still readable', async () => {
@@ -1283,6 +1541,63 @@ async function n8nNode() {
     eq(r.code, 0, `exit code (${oneLine(r.stderr)})`);
     eq([r.items[0].json.status, r.items[0].json.engine], ['queued', 'worker'], 'item');
     expectStatus(await S.api.delete(`/api/v1/transcriptions/${r.items[0].json.id}`), 200);
+  });
+
+  // The node in-process (tests/n8n-harness.cjs as a module) for binaries the CLI cannot build and for proxies.
+  const { runNode } = createRequire(import.meta.url)('./n8n-harness.cjs');
+  const audioItem = (binary = {}) => [{ json: {}, binary: { data: { data: CLIP_BYTES.toString('base64'), mimeType: 'audio/mpeg', fileName: 'clip.mp3', fileExtension: 'mp3', ...binary } } }];
+  const transcribeParams = (extra = {}) => ({ resource: 'transcription', operation: 'transcribe', binaryPropertyName: 'data', additionalFields: {}, ...extra });
+  const isPoll = (req) => req.method === 'GET' && /^\/api\/v1\/transcriptions\/tr_/.test(req.url);
+
+  await check('Transcribe: extensionless audio/mpeg binary (n8n sets fileExtension "mpga") is uploaded as .mp3', async () => {
+    const { output, error } = await runNode({
+      baseUrl: BASE, apiKey: S.key1,
+      items: audioItem({ fileName: 'RE5f2c1a', fileExtension: 'mpga' }),
+      parameters: transcribeParams({ engine: 'cloud' }),
+    });
+    assert(!error, `node error: ${error?.message}`);
+    eq([output[0].json.status, output[0].json.filename], ['completed', 'RE5f2c1a.mp3'], 'item');
+    expectStatus(await S.api.delete(`/api/v1/transcriptions/${output[0].json.id}`), 200);
+  });
+
+  await check('Transcribe (worker, wait): an HTTP 503 while polling is retried and the job still completes', async () => {
+    let polls = 0;
+    const proxy = await startFlakyProxy((req) => (isPoll(req) && ++polls === 1 ? 503 : null));
+    try {
+      const running = runNode({
+        baseUrl: proxy.url, apiKey: S.key1, items: audioItem(),
+        parameters: transcribeParams({ engine: 'worker', waitForCompletion: true, pollInterval: 1, timeout: 60 }),
+      });
+      await waitFor('the injected 503', async () => proxy.log.some((r) => r.injected === 503), { timeoutMs: 30000 });
+      // Play the PC worker.
+      const worker = new Client({ Authorization: `Bearer ${WORKER_TOKEN}` });
+      const job = expectStatus(await worker.post('/api/worker/claim', { json: { worker: 'e2e-n8n' } }), 200).data.job;
+      expectStatus(await worker.post(`/api/worker/jobs/${job.id}/complete`, {
+        json: { text: 'Polling survived.', segments: [{ start: 0, end: 1, text: 'Polling survived.' }], duration: 1 },
+      }), 200);
+      const { output, error } = await running;
+      assert(!error, `node error: ${error?.message}`);
+      eq([output[0].json.id, output[0].json.status, output[0].json.text], [job.id, 'completed', 'Polling survived.'], 'item');
+      expectStatus(await S.api.delete(`/api/v1/transcriptions/${job.id}`), 200);
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  await check('Transcribe (worker, wait): a non-retryable poll error keeps the transcription id (continue on fail)', async () => {
+    const proxy = await startFlakyProxy((req) => (isPoll(req) ? 403 : null));
+    try {
+      const { output, error } = await runNode({
+        baseUrl: proxy.url, apiKey: S.key1, items: audioItem(), continueOnFail: true,
+        parameters: transcribeParams({ engine: 'worker', waitForCompletion: true, pollInterval: 1, timeout: 30 }),
+      });
+      assert(!error, `node error: ${error?.message}`);
+      const json = output[0].json;
+      assert(/^tr_[a-f0-9]{24}$/.test(json.id ?? '') && /Polling transcription tr_\w+ failed/.test(json.error ?? ''), `item: ${oneLine(JSON.stringify(json))}`);
+      expectStatus(await S.api.delete(`/api/v1/transcriptions/${json.id}`), 200);
+    } finally {
+      await proxy.close();
+    }
   });
 
   await check('Get (format srt) -> subtitle content', async () => {
@@ -1402,10 +1717,10 @@ function printSummary(startedAt) {
 async function cleanup() {
   stopAll();
   await Promise.all([...children].map((proc) => proc.done));
-  if (opts.db === 'mysql') {
+  if (S.ownsDb) {
     await mysqlServer(`DROP DATABASE IF EXISTS \`${MYSQL.name}\``).catch((err) => console.error(`Could not drop ${MYSQL.name}: ${err.message}`));
   }
-  fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  if (S.ownsTmp) fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 }
 
 async function main() {
@@ -1433,6 +1748,7 @@ async function main() {
       await publicApiAuth();
       await workerEngine();
       await workerApi();
+      await workerResilience();
       await cloudEngine();
       await audioAndDelete();
       await n8nNode();

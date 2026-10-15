@@ -658,8 +658,21 @@ dialog.modal::backdrop { background: rgba(14, 10, 26, .55); }
   .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+@media (max-width: 480px) {
+  /* Give the native audio timeline the full width (next to the speed select it shrinks to a few pixels). */
+  .player-inner { flex-wrap: wrap; row-gap: 6px; }
+  .player audio { flex: 1 1 100%; }
+  .player select.compact { margin-left: auto; }
+  body.has-player { padding-bottom: 116px; }
+  body.has-player .toasts { bottom: 126px; }
+}
+
 @media (max-width: 400px) {
-  .brand-name { display: none; }
+  /* Visually hidden but still the link's accessible name. */
+  .brand-name {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .btn-group .btn { padding-left: 9px; padding-right: 9px; }
 }

@@ -13,9 +13,12 @@ final class InstallerWeb
     {
         $configPath = Config::path();
         $storage = self::storagePath($configPath);
-        if (Installer::isLocked($storage)) {
+        // An existing config.php counts as installed even without the lock file. Paths are not shown:
+        // this page is public and absolute paths reveal the hosting account name.
+        if (Installer::isInstalled($configPath, $storage)) {
             self::page('Already installed', '<p>Transcribe API is already installed. For safety the installer is locked.</p>'
-                . '<p class="muted">To run it again, delete <code>' . self::e(Installer::lockFile($storage)) . '</code>.</p>'
+                . '<p class="muted">To run it again, delete <code>installed.lock</code> in the storage folder and move '
+                . '<code>config.php</code> aside (keep a copy: it holds the database password and worker tokens).</p>'
                 . '<p><a class="button" href="./">Open the dashboard</a></p>', 403);
             return;
         }
@@ -64,7 +67,12 @@ final class InstallerWeb
                 'sqlite_path' => $v['sqlite_path'],
             ],
             'admin' => ['name' => $v['admin_name'], 'email' => $v['admin_email'], 'password' => $v['admin_password']],
-            'cloud' => ['base_url' => $v['cloud_base_url'], 'api_key' => $v['cloud_api_key'], 'model' => $v['cloud_model']],
+            'cloud' => [
+                'base_url' => $v['cloud_base_url'],
+                'api_key' => $v['cloud_api_key'],
+                'model' => $v['cloud_model'],
+                'translate_model' => $v['cloud_translate_model'],
+            ],
             'base_url' => $v['base_url'],
         ]);
     }
@@ -91,7 +99,7 @@ final class InstallerWeb
             'sqlite_path' => $storage . '/app.sqlite',
             'admin_name' => '', 'admin_email' => '', 'admin_password' => '', 'admin_password2' => '',
             'cloud_base_url' => 'https://api.groq.com/openai/v1', 'cloud_api_key' => '', 'cloud_model' => 'whisper-large-v3-turbo',
-            'base_url' => '',
+            'cloud_translate_model' => '', 'base_url' => '',
         ];
     }
 
@@ -126,7 +134,7 @@ final class InstallerWeb
             . '<label>Driver<select name="driver">' . $option('mysql', 'MySQL / MariaDB (recommended on cPanel)') . $option('sqlite', 'SQLite (small installs)') . '</select></label>'
             . '<div class="grid">' . $f('db_host', 'MySQL host') . $f('db_port', 'MySQL port') . $f('db_name', 'MySQL database name')
             . $f('db_user', 'MySQL user') . $f('db_pass', 'MySQL password', 'password', 'cPanel: create the database and user under "MySQL Databases".') . '</div>'
-            . $f('sqlite_path', 'SQLite file (SQLite only)') . '</div>'
+            . $f('sqlite_path', 'SQLite file (SQLite only)', 'text', 'Absolute path ending in .sqlite or .db, in the storage folder or outside the web root.') . '</div>'
             . '<div class="card"><h2>3. Administrator</h2><div class="grid">'
             . $f('admin_name', 'Name') . $f('admin_email', 'Email', 'email', '', ' required')
             . $f('admin_password', 'Password (min. 8 characters)', 'password', '', ' required minlength="8"')
@@ -135,6 +143,8 @@ final class InstallerWeb
             . '<p class="muted">Any OpenAI-compatible speech-to-text API, e.g. Groq (<code>https://api.groq.com/openai/v1</code>, model <code>whisper-large-v3-turbo</code>) '
             . 'or OpenAI (<code>https://api.openai.com/v1</code>, model <code>whisper-1</code>). Leave the key empty to use only the PC worker.</p>'
             . $f('cloud_base_url', 'API base URL') . '<div class="grid">' . $f('cloud_api_key', 'API key', 'password') . $f('cloud_model', 'Model') . '</div>'
+            . $f('cloud_translate_model', 'Translate model (optional)', 'text',
+                'Used for task=translate. Empty: <code>whisper-1</code> for OpenAI, <code>whisper-large-v3</code> otherwise (Groq).')
             . $f('base_url', 'Public URL of this app (optional)', 'url', 'Auto-detected when empty, e.g. https://example.com/transcribe')
             . '</div><button class="primary" type="submit">Install</button></form>';
         self::page('Install', $html);
